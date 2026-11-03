@@ -1,0 +1,77 @@
+# Generated from the game's executable: never commit (see README.md)
+/gen/
+/analysis/
+/gen*/
+/analysis*/
+.pytest_cache/
+# Game files
+*.esm
+*.esp
+*.bsa
+*.ini
+*.exe
+*.dll
+*.bik
+*.ico
+# Saves and logs copied off a phone
+save/
+/port/
+log.txt
+# Your own exe and DLLs, if kept next to the repo (anchored: android/app/jni/game is source)
+/GAME/
+# Build outputs (APKs go on GitHub Releases as assets, not in git)
+*.apk
+/build/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+tools/__pycache__/
+desktop/build/
+# Private Apple dependencies, environments and build products.
+/macos/.venv/
+/macos/deps/
+/macos/build/
+/macos/graphics/build/
+/macos/evidence/
+/simulator/deps/
+/simulator/build/
+/simulator/.venv/
+__pycache__/
+*.dylib
+*.dSYM/
+*_d3d9.log
+# Shared Apple launcher: generated build products, evidence and local checkout path.
+/apple/build/
+/apple/Resources/checkout-path.txt
+/apple/SkyrimApple.xcodeproj/
+# Private physical iPad native runtime builds, dependencies and evidence.
+/ipad/build/
+/ipad/deps/
+/ipad/evidence/
+# Saves, signing material and app packages stay private.
+*.ess
+*.skse
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.cer
+*.ipa
+*.xcarchive/
+
+# Local signing material and native products are never public source.
+/.venv/
+.env
+.env.*
+*.app/
+*.ipa
+*.xcarchive/
+*.a
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.p8
+*.pem
+*.key
+.DS_Store

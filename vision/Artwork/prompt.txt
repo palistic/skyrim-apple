@@ -1,0 +1,22 @@
+# Original launcher icon prompts
+
+Built-in image_gen tool; no game or other reference assets supplied.
+
+## Initial generation
+
+Use case: stylized-concept
+Asset type: original premium Apple Vision Pro launcher app icon, square 1024 x 1024 full-bleed image.
+Primary request: an exceptionally polished dark Nordic fantasy icon, evocative of cold mountains and ancient craft, using only newly invented artwork. This is an original game launcher icon, NOT a reproduction of any game's emblem.
+Scene/backdrop: deep obsidian and charcoal gray, subtle atmospheric smoke and a soft frosted stone gradient extending all the way to all four square edges.
+Subject: one singular sculptural geometric crest, an original angular mountain peak / ice-cut rune-like shape carved from frost-silver metal. Bold, readable and elegant silhouette, broad enough to read at tiny icon sizes. A restrained warm champagne-gold inlay runs through a few interior facets. A small amount of negative space within the crest adds depth. It should feel hand-forged, mysterious, expensive and tactile, not a generic tech lettermark.
+Composition/framing: straight-on, centered, crest occupies about 58 percent of image width and height; all meaningful shapes comfortably inside the central circular icon crop. Perfectly balanced optical weight. No surrounding frame.
+Lighting/mood: dramatic cool silver edge light, soft warm gold reflections, physically plausible brushed metal facets, rich shadows. Sophisticated and restrained.
+Color palette: smoke gray, obsidian, frost silver, warm white, a small champagne-gold accent. No purple.
+Text: none.
+Constraints: entirely original visual design, no reference images, no extracted game assets. No Skyrim or Bethesda logo, no Imperial dragon crest, no dragon silhouette, no characters, no recognizable franchise item, no game screenshot, no font/wordmark, no lettering, no watermark. No circle, badge border, or baked-in rounded-square corners. Opaque full square background; the operating system will apply its own mask.
+
+## Circular-crop composition edit
+
+Use case: precise-object-edit
+Asset type: original Apple Vision Pro app icon.
+Keep this exact newly invented silver and gold geometric mountain crest, its facets and materials, and the same charcoal smoke / rugged stone background aesthetic. Change only composition: make the central crest 72 percent of its current size, preserving its shape and proportions exactly, centered both horizontally and vertically, with a generous clear dark smoky margin on all sides. Continue the existing backdrop naturally into the area revealed around the emblem. Its outer tips must be well inside a centered circular crop and never approach the corners. Keep the background full-bleed square and opaque, with no applied mask or border. No new symbols, no text, no letters, no logos, no game artwork or assets. The result must remain an original premium silver, smoke gray and subtle gold fantasy launcher icon.

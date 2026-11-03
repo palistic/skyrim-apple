@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "created_utc": "2026-10-27T03:12:37.913393+00:00",
+  "asset": "SkyrimAdjacent-original.png",
+  "sha256": "a47de22d99e5576ac1435da578b68ac6a6b3b344e9e6d778264792496822ff4f",
+  "pixels": [
+    1254,
+    1254
+  ],
+  "opaque": true,
+  "method": "built-in image_gen generation followed by one targeted composition edit",
+  "source_images": [],
+  "asset_constraint": "No TESV/game art, logo, screenshot or extracted assets were supplied. Entirely new abstract mountain/rune crest. No lettering or dragon mark.",
+  "prompt_file": "prompt.txt",
+  "inspection": "Visually inspected generated result: original silver/gold geometric crest on charcoal smoke/stone, full square opaque background, substantial circular-crop margins; no text, dragon, character or recognizable game logo.",
+  "packaging_note": "Root may resize to1024 for appicon packaging. This source has not been resampled or pixel-edited outside imagegen."
+}

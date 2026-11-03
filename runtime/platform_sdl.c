@@ -1,0 +1,479 @@
+/* Host platform layer on SDL2: window (Vulkan surface for DXVK), event pump.
+ * The same code runs on desktop Linux and on Android. */
+#include "game.h"
+#include "rt.h"
+#include <SDL2/SDL.h>
+#ifndef __ANDROID__
+#include <fcntl.h>
+#endif
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+/* Apple input policy (input.c, dinput.c) on macOS, iOS, iPadOS and the iPad
+ * Simulator: DirectInput keyboard and mouse are tracked from the events pumped
+ * here, and controllers attached at launch are XInput pads from the first
+ * poll. Touches stay touches (the LB_TOUCH overlay only). */
+#define LB_APPLE_INPUT 1
+#if !TARGET_OS_IPHONE
+#include <pthread.h>
+/* AppKit only processes events on the process main thread. Skyrim presents
+ * from its loading-screen thread too, so other threads drain SDL's queue
+ * without pumping, and the main thread (which presents in menus and play)
+ * pumps. Android and the iOS targets keep their existing behaviour. */
+#define LB_MAC_MAIN_PUMP 1
+#elif !TARGET_OS_SIMULATOR
+#include <CoreFoundation/CoreFoundation.h>
+#include <mach/mach.h>
+#include <pthread.h>
+#include <stdatomic.h>
+/* Physical iPhone/iPad: the game runs inside the launcher app on its main
+ * thread (ipad/native_bridge.mm). The launcher pauses it (input gate),
+ * suspends it while in the background (no GPU work is allowed there) and can
+ * end it; all three take effect at the next presented frame. */
+#define LB_IOS_DEVICE 1
+#endif
+#endif
+
+static SDL_Window *g_window;
+static int g_frames;
+static void load_key_script(void);
+
+#ifdef LB_APPLE_INPUT
+void dinput_handle_event(const SDL_Event *e);
+void input_open_attached(void);
+#endif
+#if defined(LB_MAC_MAIN_PUMP) || defined(LB_IOS_DEVICE)
+/* The game reads relative DirectInput motion and draws its own menu cursor:
+ * capture the pointer once the window has keyboard focus. SDL releases it on
+ * Cmd-Tab and restores it on return (on iPadOS it locks the pointer through
+ * GCMouse). Main thread only. LB_MOUSE_CAPTURE=0 leaves the pointer free. */
+static void capture_mouse(void) {
+    static int wanted = -1;
+    if (wanted < 0) {
+        const char *v = getenv("LB_MOUSE_CAPTURE");
+        wanted = !(v && *v == '0');
+        if (!wanted) LOG("mouse: capture disabled (LB_MOUSE_CAPTURE=0)");
+    }
+    if (!wanted || !g_window || SDL_GetRelativeMouseMode() || SDL_GetKeyboardFocus() != g_window) return;
+    if (SDL_SetRelativeMouseMode(SDL_TRUE) == 0) LOG("mouse: captured for the game window");
+    else { LOG("mouse: relative mode unavailable: %s", SDL_GetError()); wanted = 0; }
+}
+#endif
+
+#ifdef LB_IOS_DEVICE
+static atomic_int g_native_pause, g_native_suspend, g_native_quit, g_main_holding;
+/* ipad/native_bridge.mm: give the launcher's own window the keyboard while the game's is hidden. */
+void skyrim_native_game_window_hidden(void);
+void platform_native_set_paused(int on) { atomic_store(&g_native_pause, on); }
+void platform_native_set_suspended(int on) { atomic_store(&g_native_suspend, on); }
+void platform_native_request_quit(void) { atomic_store(&g_native_quit, 1); }
+
+static void native_quit_if_requested(void) {
+    if (!atomic_load(&g_native_quit)) return;
+    LOG("quit requested by the launcher");
+    fflush(NULL);
+    _exit(0);  /* skip static teardown under running guest threads, as on the Mac */
+}
+
+/* Current protections across the 4 GiB guest reservation, as evidence that no
+ * guest page is ever executable. */
+static void native_log_guest_memory(void) {
+    vm_address_t addr = (vm_address_t)MEM, end = addr + (1ull << 32);
+    unsigned regions = 0;
+    unsigned long long none = 0, rw = 0, other = 0, exec = 0;
+    while (addr < end) {
+        vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        vm_address_t probe = addr;
+        if (vm_region_64(mach_task_self(), &addr, &size, VM_REGION_BASIC_INFO_64,
+                         (vm_region_info_t)&info, &count, &object) != KERN_SUCCESS || addr >= end) break;
+        if (addr < probe) {  /* a region reaching into the guest range from below */
+            size -= probe - addr;
+            addr = probe;
+        }
+        vm_size_t span = addr + size > end ? end - addr : size;
+        regions++;
+        if (info.protection & VM_PROT_EXECUTE) exec += span;
+        else if (info.protection == VM_PROT_NONE) none += span;
+        else if (info.protection == (VM_PROT_READ | VM_PROT_WRITE)) rw += span;
+        else other += span;
+        addr += size;
+    }
+    LOG("guest memory: %u regions in [%p, +4 GiB): none %llu, read/write %llu, other %llu, executable %llu bytes",
+        regions, (void *)MEM, none, rw, other, exec);
+}
+
+/* Holds frames while the launcher has the game paused or the app is inactive
+ * (no GPU work is allowed in the background). On the main thread a pause hides
+ * the game window and releases the pointer, so the launcher's own Paused
+ * screen (with Resume) shows and gets the keyboard, and keeps UIKit's run loop
+ * turning. Other presenting threads always wait out a suspension, but wait
+ * out a pause only once the main thread holds too: before then, Resume isn't
+ * reachable and the main thread may be waiting on them. */
+static int native_should_hold(int main_thread) {
+    if (atomic_load(&g_native_suspend)) return 1;
+    return atomic_load(&g_native_pause) && (main_thread || atomic_load(&g_main_holding));
+}
+
+static void native_hold_frames(void) {
+    native_quit_if_requested();
+    int main_thread = pthread_main_np(), hidden = 0;
+    if (!native_should_hold(main_thread)) return;
+    LOG("platform: frames held on the %s thread (%s)", main_thread ? "main" : "secondary",
+        atomic_load(&g_native_suspend) ? "app inactive" : "paused by the launcher");
+    if (main_thread) atomic_store(&g_main_holding, 1);
+    while (native_should_hold(main_thread)) {
+        native_quit_if_requested();
+        if (!main_thread) {
+            usleep(20000);
+            continue;
+        }
+        if (atomic_load(&g_native_pause) && !hidden && g_window) {
+            SDL_SetRelativeMouseMode(SDL_FALSE);  /* capture_mouse takes it again after the show */
+            SDL_HideWindow(g_window);
+            skyrim_native_game_window_hidden();
+            hidden = 1;
+        }
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false);
+    }
+    if (main_thread) atomic_store(&g_main_holding, 0);
+    /* SDL_ShowWindow makes the window key and visible again. (SDL_RaiseWindow must not
+     * be used here: on UIKit it rebinds a GL context, and this build has no GL.) */
+    if (hidden) SDL_ShowWindow(g_window);
+    /* Buttons released while the window was hidden never reached the game: release
+     * everything the way a focus loss does, then drop the input queued meanwhile. */
+    SDL_Event lost = {0};
+    lost.type = SDL_WINDOWEVENT;
+    lost.window.event = SDL_WINDOWEVENT_FOCUS_LOST;
+    dinput_handle_event(&lost);
+    SDL_FlushEvents(SDL_KEYDOWN, SDL_MOUSEWHEEL);
+    LOG("platform: frames resumed on the %s thread", main_thread ? "main" : "secondary");
+}
+#endif
+
+void platform_init(void) {
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0)
+        rt_fatal("SDL_Init: %s", SDL_GetError());
+    int w = 1280, h = 720;
+    Uint32 flags = SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN;
+#ifdef LB_IOS_DEVICE
+    flags |= SDL_WINDOW_BORDERLESS;  /* no status bar over the game */
+#endif
+    if (getenv("LB_WINDOW")) sscanf(getenv("LB_WINDOW"), "%dx%d", &w, &h);  /* desktop testing */
+#ifdef __ANDROID__
+    flags |= SDL_WINDOW_FULLSCREEN;
+    SDL_DisplayMode dm;
+    if (SDL_GetDesktopDisplayMode(0, &dm) == 0) { w = dm.w; h = dm.h; }
+#endif
+    g_window = SDL_CreateWindow(GAME_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w, h, flags);
+    if (!g_window) rt_fatal("SDL_CreateWindow: %s", SDL_GetError());
+#ifdef LB_APPLE_INPUT
+    input_open_attached();
+#endif
+    extern void user32_set_screen(int, int);
+    user32_set_screen(w, h);
+    LOG("platform: window %dx%d", w, h);
+    load_key_script();
+}
+
+void *platform_window(void) { return g_window; }
+
+/* Scripted input for automated runs: LB_KEYS="frame:Key[:frames],..." holds
+ * the SDL-named key (e.g. Return, Space, Left) from that frame on. */
+typedef struct { int frame, len; SDL_Scancode sc; int text; } KeyEv;
+static KeyEv g_script[256];
+static int g_nscript;
+static Uint8 g_keys[SDL_NUM_SCANCODES];
+static int g_padonly;  /* LB_PADONLY=1: scripted keys drive only the virtual XInput pad */
+
+static void load_key_script(void) {
+    const char *s = getenv("LB_KEYS");
+    g_padonly = getenv("LB_PADONLY") && *getenv("LB_PADONLY") == '1';
+    while (s && *s && g_nscript < 256) {
+        char name[32] = "";
+        int fr = 0, len = 10, n = 0;
+        if (sscanf(s, "%d:%31[^:,]%n", &fr, name, &n) < 2) break;
+        s += n;
+        if (*s == ':') { s++; len = (int)strtol(s, (char **)&s, 10); }
+        SDL_Scancode sc = SDL_GetScancodeFromName(name);
+        if (sc != SDL_SCANCODE_UNKNOWN) g_script[g_nscript++] = (KeyEv){fr, len, sc, 0};
+        else LOG("LB_KEYS: unknown key %s", name);
+        if (*s == ',') s++;
+    }
+}
+
+/* SDL scancode -> Windows virtual-key code */
+static uint32_t vk_of(SDL_Scancode s) {
+    if (s >= SDL_SCANCODE_A && s <= SDL_SCANCODE_Z) return 'A' + (s - SDL_SCANCODE_A);
+    if (s >= SDL_SCANCODE_1 && s <= SDL_SCANCODE_9) return '1' + (s - SDL_SCANCODE_1);
+    if (s >= SDL_SCANCODE_F1 && s <= SDL_SCANCODE_F12) return 0x70 + (s - SDL_SCANCODE_F1);
+    switch (s) {
+    case SDL_SCANCODE_0: return '0';
+    case SDL_SCANCODE_RETURN: return 0x0D;
+    case SDL_SCANCODE_ESCAPE: return 0x1B;
+    case SDL_SCANCODE_BACKSPACE: return 0x08;
+    case SDL_SCANCODE_TAB: return 0x09;
+    case SDL_SCANCODE_SPACE: return 0x20;
+    case SDL_SCANCODE_LSHIFT: case SDL_SCANCODE_RSHIFT: return 0x10;
+    case SDL_SCANCODE_LCTRL: case SDL_SCANCODE_RCTRL: return 0x11;
+    case SDL_SCANCODE_LALT: case SDL_SCANCODE_RALT: return 0x12;
+    case SDL_SCANCODE_LEFT: return 0x25;
+    case SDL_SCANCODE_UP: return 0x26;
+    case SDL_SCANCODE_RIGHT: return 0x27;
+    case SDL_SCANCODE_DOWN: return 0x28;
+    case SDL_SCANCODE_PAGEUP: return 0x21;
+    case SDL_SCANCODE_PAGEDOWN: return 0x22;
+    case SDL_SCANCODE_END: return 0x23;
+    case SDL_SCANCODE_HOME: return 0x24;
+    case SDL_SCANCODE_INSERT: return 0x2D;
+    case SDL_SCANCODE_DELETE: return 0x2E;
+    default: return 0;
+    }
+}
+
+static void key_event(SDL_Scancode sc, int down) {
+    extern void user32_key_event(uint32_t vk, uint32_t sc, int down);
+    uint32_t vk = vk_of(sc);
+    /* PC scan code: approximate with the DirectInput code, which matches set 1 */
+    extern uint32_t dinput_dik_of(int sdl_scancode);
+    user32_key_event(vk, dinput_dik_of(sc), down);
+}
+
+/* Emits key events for scripted keys whose state changed this frame. */
+static void script_events(void) {
+    static Uint8 prev[SDL_NUM_SCANCODES];
+    if (!g_nscript) return;
+    Uint8 cur[SDL_NUM_SCANCODES] = {0};
+    for (int i = 0; i < g_nscript; i++)
+        if (g_frames >= g_script[i].frame && g_frames < g_script[i].frame + g_script[i].len) cur[g_script[i].sc] = 1;
+    for (int i = 0; i < g_nscript; i++) {
+        SDL_Scancode sc = g_script[i].sc;
+        if (cur[sc] != prev[sc]) {
+            if (!g_padonly || g_script[i].text) key_event(sc, cur[sc]);
+            if (!g_script[i].text) {  /* typed text drives the keyboard only, not the virtual pad */
+                SDL_Event e = {0};
+                e.type = cur[sc] ? SDL_KEYDOWN : SDL_KEYUP;
+                e.key.keysym.scancode = sc;
+                e.key.keysym.sym = SDL_GetKeyFromScancode(sc);
+                extern void input_handle_event(const SDL_Event *e);
+                input_handle_event(&e);
+            }
+            prev[sc] = cur[sc];
+        }
+    }
+    /* drop typed keys that are over (their release was just sent) */
+    int n = 0;
+    for (int i = 0; i < g_nscript; i++)
+        if (!g_script[i].text || g_frames < g_script[i].frame + g_script[i].len) g_script[n++] = g_script[i];
+    g_nscript = n;
+}
+
+/* Phone keyboard: the keyboard button (touch.cpp) shows or hides it. The game
+ * reads keys only through DirectInput (and turns them into characters with
+ * ToUnicode), so each typed character becomes a short scripted key press,
+ * with Shift held around capitals and symbols, one after another. */
+static int g_text_on, g_text_hidden_frames, g_text_next;
+#ifdef LB_MAC_MAIN_PUMP
+static volatile int g_text_apply;
+#endif
+int platform_text_input(int toggle) {
+    if (toggle < 0) return g_text_on;
+    g_text_on = !g_text_on;
+    g_text_hidden_frames = 0;
+#ifdef LB_MAC_MAIN_PUMP
+    if (!pthread_main_np()) {
+        g_text_apply = 1;  /* AppKit text input changes on the main thread's next present */
+        LOG("keyboard %s (deferred to main thread)", g_text_on ? "shown" : "hidden");
+        return g_text_on;
+    }
+#endif
+    if (g_text_on) SDL_StartTextInput(); else SDL_StopTextInput();
+    LOG("keyboard %s", g_text_on ? "shown" : "hidden");
+    return g_text_on;
+}
+static void type_key(SDL_Scancode sc, int shift) {
+    if (g_nscript > 250) return;
+    if (g_text_next < g_frames + 1) g_text_next = g_frames + 1;
+    if (shift) {
+        g_script[g_nscript++] = (KeyEv){g_text_next, 4, SDL_SCANCODE_LSHIFT, 1};
+        g_script[g_nscript++] = (KeyEv){g_text_next + 1, 2, sc, 1};
+        g_text_next += 5;
+    } else {
+        g_script[g_nscript++] = (KeyEv){g_text_next, 2, sc, 1};
+        g_text_next += 3;
+    }
+}
+/* US layout */
+static void type_char(unsigned ch) {
+    static const char shifted_digits[] = ")!@#$%^&*(";
+    static const struct { char c, s; SDL_Scancode sc; } sym[] = {
+        {' ', 0, SDL_SCANCODE_SPACE}, {'-', 0, SDL_SCANCODE_MINUS}, {'_', 1, SDL_SCANCODE_MINUS},
+        {'=', 0, SDL_SCANCODE_EQUALS}, {'+', 1, SDL_SCANCODE_EQUALS}, {'\'', 0, SDL_SCANCODE_APOSTROPHE},
+        {'"', 1, SDL_SCANCODE_APOSTROPHE}, {',', 0, SDL_SCANCODE_COMMA}, {'<', 1, SDL_SCANCODE_COMMA},
+        {'.', 0, SDL_SCANCODE_PERIOD}, {'>', 1, SDL_SCANCODE_PERIOD}, {'/', 0, SDL_SCANCODE_SLASH},
+        {'?', 1, SDL_SCANCODE_SLASH}, {';', 0, SDL_SCANCODE_SEMICOLON}, {':', 1, SDL_SCANCODE_SEMICOLON},
+        {'[', 0, SDL_SCANCODE_LEFTBRACKET}, {']', 0, SDL_SCANCODE_RIGHTBRACKET}, {'`', 0, SDL_SCANCODE_GRAVE},
+        {'~', 1, SDL_SCANCODE_GRAVE}, {'\n', 0, SDL_SCANCODE_RETURN},
+    };
+    if (ch >= 'a' && ch <= 'z') { type_key((SDL_Scancode)(SDL_SCANCODE_A + ch - 'a'), 0); return; }
+    if (ch >= 'A' && ch <= 'Z') { type_key((SDL_Scancode)(SDL_SCANCODE_A + ch - 'A'), 1); return; }
+    if (ch == '0') { type_key(SDL_SCANCODE_0, 0); return; }
+    if (ch >= '1' && ch <= '9') { type_key((SDL_Scancode)(SDL_SCANCODE_1 + ch - '1'), 0); return; }
+    for (int i = 0; i < 10; i++)
+        if (ch == (unsigned char)shifted_digits[i]) { type_key(i ? (SDL_Scancode)(SDL_SCANCODE_1 + i - 1) : SDL_SCANCODE_0, 1); return; }
+    for (unsigned i = 0; i < sizeof sym / sizeof sym[0]; i++)
+        if (ch == (unsigned char)sym[i].c) { type_key(sym[i].sc, sym[i].s); return; }
+}
+/* While the phone keyboard is up: characters arrive as SDL_TEXTINPUT (the
+ * key events SDL makes up for them are pressed and released at once, too
+ * fast for DirectInput polling), Backspace and Enter as key presses. Returns
+ * 1 when the event was used. */
+static int text_event(const SDL_Event *e) {
+    if (!g_text_on) return 0;
+    if (e->type == SDL_TEXTINPUT) {
+        for (const unsigned char *p = (const unsigned char *)e->text.text; *p; p++)
+            if (*p < 0x80) type_char(*p);
+        return 1;
+    }
+    if (e->type == SDL_KEYDOWN || e->type == SDL_KEYUP) {
+        SDL_Scancode sc = e->key.keysym.scancode;
+        int special = sc == SDL_SCANCODE_BACKSPACE || sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_ESCAPE ||
+                      sc == SDL_SCANCODE_TAB || sc == SDL_SCANCODE_DELETE ||
+                      (sc >= SDL_SCANCODE_RIGHT && sc <= SDL_SCANCODE_UP);
+        if (special && e->type == SDL_KEYDOWN && !e->key.repeat) type_key(sc, 0);
+        return special || SDL_GetKeyFromScancode(sc) < 0x80 || sc == SDL_SCANCODE_LSHIFT || sc == SDL_SCANCODE_RSHIFT;
+    }
+    return 0;
+}
+const Uint8 *platform_keys(int *n);
+/* Shift as the game should see it (ToUnicode gets the game's own key state). */
+int platform_shift_down(void) {
+    const Uint8 *ks = platform_keys(NULL);
+    return ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT];
+}
+
+const Uint8 *platform_keys(int *n) {
+    int nk;
+    const Uint8 *ks = SDL_GetKeyboardState(&nk);
+    if (!g_nscript || g_padonly) { if (n) *n = nk; return ks; }
+    memcpy(g_keys, ks, nk < SDL_NUM_SCANCODES ? nk : SDL_NUM_SCANCODES);
+    for (int i = 0; i < g_nscript; i++)
+        if (g_frames >= g_script[i].frame && g_frames < g_script[i].frame + g_script[i].len) g_keys[g_script[i].sc] = 1;
+    if (n) *n = SDL_NUM_SCANCODES;
+    return g_keys;
+}
+
+/* Interactive test input: LB_KEYFIFO=path, lines "Key[:frames]" are queued
+ * at the current frame (desktop testing only). */
+static void poll_key_fifo(void) {
+#ifndef __ANDROID__
+    static FILE *fifo;
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        const char *p = getenv("LB_KEYFIFO");
+        if (p) {
+            int fd = open(p, O_RDONLY | O_NONBLOCK);
+            if (fd >= 0) fifo = fdopen(fd, "r");
+        }
+    }
+    if (!fifo) return;
+    char line[64];
+    while (fgets(line, sizeof line, fifo)) {
+        char name[32] = "";
+        int len = 8;
+        if (!strncmp(line, "dump ", 5)) {  /* "dump <file>": save the exe's data sections */
+            line[strcspn(line, "\n")] = 0;
+            FILE *d = fopen(line + 5, "wb");
+            if (d) { fwrite(MEM + 0x934000, 1, 0x20E2490, d); fclose(d); }
+            LOG("keyfifo: dumped data to %s at frame %d", line + 5, g_frames);
+            continue;
+        }
+        if (sscanf(line, "%31[^:\n]:%d", name, &len) < 1) continue;
+        SDL_Scancode sc = SDL_GetScancodeFromName(name);
+        if (sc == SDL_SCANCODE_UNKNOWN || g_nscript >= 256) continue;
+        g_script[g_nscript++] = (KeyEv){g_frames + 1, len, sc, 0};
+        LOG("keyfifo: %s at frame %d", name, g_frames + 1);
+    }
+    clearerr(fifo);
+#endif
+}
+
+/* SDL_PollEvent pumps the OS event loop; SDL_PeepEvents only reads SDL's
+ * locked queue, which is safe from any thread. */
+static int next_event(SDL_Event *e) {
+#ifdef LB_MAC_MAIN_PUMP
+    if (!pthread_main_np()) return SDL_PeepEvents(e, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) > 0;
+    if (g_text_apply) {
+        g_text_apply = 0;
+        if (g_text_on) SDL_StartTextInput(); else SDL_StopTextInput();
+    }
+#endif
+    return SDL_PollEvent(e);
+}
+
+void platform_present_hook(void) {
+    SDL_Event e;
+    poll_key_fifo();
+    while (next_event(&e)) {
+        if (e.type == SDL_QUIT) {
+            LOG("quit requested");
+            fflush(NULL);
+#if defined(LB_MAC_MAIN_PUMP) || defined(LB_IOS_DEVICE)
+            _exit(0);  /* any thread may drain SDL_QUIT; skip static teardown under running guest threads */
+#else
+            exit(0);
+#endif
+        }
+#ifdef LB_APPLE_INPUT
+        dinput_handle_event(&e);
+#endif
+        if (text_event(&e)) continue;
+        if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
+            key_event(e.key.keysym.scancode, e.type == SDL_KEYDOWN);
+        extern void input_handle_event(const SDL_Event *e);
+        input_handle_event(&e);
+        extern void touch_handle_event(const SDL_Event *e);
+        touch_handle_event(&e);
+    }
+    script_events();
+#ifdef LB_MAC_MAIN_PUMP
+    if (pthread_main_np()) capture_mouse();
+#endif
+#ifdef LB_IOS_DEVICE
+    if (pthread_main_np()) capture_mouse();
+    static atomic_int first_frame_logged;
+    if (!atomic_exchange(&first_frame_logged, 1)) {
+        LOG("platform: first frame presented (%s thread)", pthread_main_np() ? "main" : "secondary");
+        native_log_guest_memory();
+    }
+    native_hold_frames();
+#endif
+#ifdef __ANDROID__
+    /* closed with the phone's Back key or its own button: follow it */
+    if (g_text_on) {
+        g_text_hidden_frames = SDL_IsScreenKeyboardShown(g_window) ? 0 : g_text_hidden_frames + 1;
+        if (g_text_hidden_frames > 60) platform_text_input(1);
+    }
+#endif
+    g_frames++;
+#ifdef GAME_SKYRIM
+    /* bGamepadEnable (Controls menu toggle, not read from the INI at boot):
+     * always on, the phone's pad and touch overlay are XInput pads. */
+    M8(0x12C3650) = 1;
+#endif
+    if (g_frames % 300 == 0) LOG("frame %d", g_frames);
+    {   /* canary: the main thread's static TLS pointer (TEB slot 0 +0x2C) */
+        static uint32_t last;
+        uint32_t v = M32(GUEST_TEB_BASE + 0x2C);
+        if (last && v != last)
+            fprintf(stderr, "frame %d: main TEB+0x2C changed %08x -> %08x (TEB+0x24 tid %u, +0x1000 %08x)\n",
+                    g_frames, last, v, M32(GUEST_TEB_BASE + 0x24), M32(GUEST_TEB_BASE + 0x1000));
+        last = v;
+    }
+}
+void platform_window_size(int *w, int *h) { if (g_window) SDL_GetWindowSize(g_window, w, h); }
+int platform_frame_count(void) { return g_frames; }

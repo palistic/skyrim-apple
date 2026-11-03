@@ -1,0 +1,189 @@
+name: SkyrimApple
+options:
+  bundleIdPrefix: dev.zschwendi.skyrim
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+    visionOS: "2.0"
+configs:
+  Debug: debug
+  Release: release
+  Cloud: release
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    DEVELOPMENT_TEAM: V729QMY3V6
+    CODE_SIGN_STYLE: Automatic
+    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "1.2"
+    GENERATE_INFOPLIST_FILE: false
+    ENABLE_USER_SCRIPT_SANDBOXING: true
+    MTL_ENABLE_DEBUG_INFO: "NO"
+    PRODUCT_NAME: Skyrim
+    PRODUCT_MODULE_NAME: SkyrimLauncher
+    CODE_SIGN_ENTITLEMENTS: Local.entitlements
+    SKYRIM_CLOUD_SYNC_CONFIGURED: "NO"
+    # Cloud builds only. Containers are unique to one team: other teams pass their own
+    # (ipad/build.py app --cloud --icloud-container, or SKYRIM_ICLOUD_CONTAINER=... to xcodebuild).
+    SKYRIM_ICLOUD_CONTAINER: iCloud.dev.zschwendi.skyrim.launcher
+  configs:
+    Cloud:
+      CODE_SIGN_ENTITLEMENTS: Cloud.entitlements
+      SKYRIM_CLOUD_SYNC_CONFIGURED: "YES"
+targetTemplates:
+  Launcher:
+    type: application
+    sources:
+      - path: Sources
+      - path: ../macos/launcher/SmokeBackground.metal
+      - path: Resources/Common.xcassets
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      properties:
+        CFBundleDisplayName: Skyrim
+        CFBundleName: Skyrim
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+        LSApplicationCategoryType: public.app-category.games
+        SkyrimCloudSyncConfigured: $(SKYRIM_CLOUD_SYNC_CONFIGURED)
+        SkyrimICloudContainerIdentifier: $(SKYRIM_ICLOUD_CONTAINER)
+        NSUbiquitousContainers:
+          $(SKYRIM_ICLOUD_CONTAINER):
+            NSUbiquitousContainerIsDocumentScopePublic: false
+            NSUbiquitousContainerName: Skyrim Saves
+            NSUbiquitousContainerSupportedFolderLevels: Any
+targets:
+  SkyrimMac:
+    templates: [Launcher]
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Resources/Mac.xcassets
+      - path: Resources/checkout-path.txt
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zschwendi.skyrim.launcher
+        ENABLE_HARDENED_RUNTIME: true
+        ENABLE_APP_SANDBOX: false
+        ARCHS: arm64
+    info:
+      path: Info-Mac.plist
+      properties:
+        NSHighResolutionCapable: true
+        NSPrincipalClass: NSApplication
+        LSMinimumSystemVersion: "14.0"
+  SkyrimIOS:
+    templates: [Launcher]
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Resources/iOS.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zschwendi.skyrim.launcher
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: false
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: false
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: false
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
+        # Physical iPad builds made by ipad/build.py link the native Skyrim runtime and pass
+        # these two; every other build leaves them empty and stays the launcher only.
+        SKYRIM_NATIVE_LDFLAGS: ""
+        SKYRIM_NATIVE_SWIFT_CONDITIONS: ""
+        "OTHER_LDFLAGS[sdk=iphoneos*]": "$(inherited) $(SKYRIM_NATIVE_LDFLAGS)"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*]": "$(inherited) $(SKYRIM_NATIVE_SWIFT_CONDITIONS)"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Native/SkyrimNativeBridge.h
+    info:
+      path: Info-iOS.plist
+      properties:
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIApplicationSupportsIndirectInputEvents: true
+        GCSupportsGameMode: true
+        UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+  SkyrimVision:
+    templates: [Launcher]
+    platform: visionOS
+    deploymentTarget: "2.0"
+    sources:
+      - path: Resources/Vision.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zschwendi.skyrim.vision.launcher
+        TARGETED_DEVICE_FAMILY: "7"
+        SDKROOT: xros
+        SUPPORTED_PLATFORMS: "xros xrsimulator"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
+    info:
+      path: Info-visionOS.plist
+      properties:
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIApplicationSupportsIndirectInputEvents: true
+  # Pure policy, sync-engine and save-format checks; no app host, account or device needed.
+  SkyrimLauncherTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests
+      - path: Sources/Services
+      - path: Sources/Model/SaveLibrary.swift
+      - path: Sources/Model/GameInstallValidator.swift
+    settings:
+      base:
+        PRODUCT_NAME: SkyrimLauncherTests
+        PRODUCT_MODULE_NAME: SkyrimLauncherTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zschwendi.skyrim.launcher.tests
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGN_ENTITLEMENTS: ""
+        CODE_SIGN_IDENTITY: "-"
+        ARCHS: arm64
+schemes:
+  SkyrimMac:
+    build:
+      targets:
+        SkyrimMac: all
+    run:
+      config: Release
+  SkyrimIOS:
+    build:
+      targets:
+        SkyrimIOS: all
+    run:
+      config: Release
+  SkyrimVision:
+    build:
+      targets:
+        SkyrimVision: all
+    run:
+      config: Release
+  SkyrimLauncherTests:
+    build:
+      targets:
+        SkyrimLauncherTests: [test]
+    test:
+      config: Debug
+      targets:
+        - SkyrimLauncherTests
