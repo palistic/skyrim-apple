@@ -37,18 +37,6 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>NSUbiquitousContainers</key>
-	<dict>
-		<key>$(SKYRIM_ICLOUD_CONTAINER)</key>
-		<dict>
-			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
-			<false/>
-			<key>NSUbiquitousContainerName</key>
-			<string>Skyrim Saves</string>
-			<key>NSUbiquitousContainerSupportedFolderLevels</key>
-			<string>Any</string>
-		</dict>
-	</dict>
 	<key>SkyrimCloudSyncConfigured</key>
 	<string>$(SKYRIM_CLOUD_SYNC_CONFIGURED)</string>
 	<key>SkyrimICloudContainerIdentifier</key>

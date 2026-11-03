@@ -216,14 +216,29 @@ class Signing(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "--cloud needs your own iCloud container"):
             self.settings(signed=False, team=None, bundle_id=None, cloud=True)
 
+    def test_no_plist_dictionary_key_needs_a_build_setting(self):
+        # Xcode expands build settings in Info.plist values only, never in dictionary keys.
+        import plistlib
+        def keys(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield key
+                    yield from keys(value)
+            elif isinstance(node, list):
+                for value in node:
+                    yield from keys(value)
+        for plist in sorted((ROOT / "apple").glob("Info-*.plist")):
+            bad = [key for key in keys(plistlib.loads(plist.read_bytes())) if "$(" in key]
+            self.assertEqual(bad, [], plist.name)
+
     def test_built_containers_must_match_the_request(self):
         mine = "iCloud.com.example.skyrim"
-        info = {"SkyrimICloudContainerIdentifier": mine, "NSUbiquitousContainers": {mine: {}}}
+        info = {"SkyrimICloudContainerIdentifier": mine}
         signed = {**{key: True for key in build.MEMORY}, **{key: [mine] for key in build.CONTAINER_ENTITLEMENTS}}
         build.check_containers(info, signed, mine)
         build.check_containers(info, None, mine)
-        owner = {**info, "NSUbiquitousContainers": {"iCloud.dev.zschwendi.skyrim.launcher": {}}}
-        with self.assertRaisesRegex(SystemExit, "NSUbiquitousContainers doesn't name"):
+        owner = {**info, "SkyrimICloudContainerIdentifier": "iCloud.dev.zschwendi.skyrim.launcher"}
+        with self.assertRaisesRegex(SystemExit, "SkyrimICloudContainerIdentifier doesn't name"):
             build.check_containers(owner, signed, mine)
         with self.assertRaisesRegex(SystemExit, "icloud-container-identifiers"):
             build.check_containers(info, {**signed, build.CONTAINER_ENTITLEMENTS[0]: ["iCloud.other"]}, mine)

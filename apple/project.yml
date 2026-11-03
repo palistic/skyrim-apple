@@ -54,11 +54,6 @@ targetTemplates:
         LSApplicationCategoryType: public.app-category.games
         SkyrimCloudSyncConfigured: $(SKYRIM_CLOUD_SYNC_CONFIGURED)
         SkyrimICloudContainerIdentifier: $(SKYRIM_ICLOUD_CONTAINER)
-        NSUbiquitousContainers:
-          $(SKYRIM_ICLOUD_CONTAINER):
-            NSUbiquitousContainerIsDocumentScopePublic: false
-            NSUbiquitousContainerName: Skyrim Saves
-            NSUbiquitousContainerSupportedFolderLevels: Any
 targets:
   SkyrimMac:
     templates: [Launcher]

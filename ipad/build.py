@@ -392,8 +392,7 @@ def check_containers(info, entitlements, container):
     carry no iCloud container entitlement (Local), with every build setting expanded."""
     if "$(" in json.dumps([info, entitlements], default=str):
         fail("The built app still contains an unexpanded $(...) build setting in its Info.plist or entitlements.")
-    found = {"Info.plist SkyrimICloudContainerIdentifier": [info.get("SkyrimICloudContainerIdentifier")],
-             "Info.plist NSUbiquitousContainers": list(info.get("NSUbiquitousContainers", {}))}
+    found = {"Info.plist SkyrimICloudContainerIdentifier": [info.get("SkyrimICloudContainerIdentifier")]}
     if entitlements is not None:
         found.update({key: entitlements.get(key) for key in CONTAINER_ENTITLEMENTS})
     if container:
