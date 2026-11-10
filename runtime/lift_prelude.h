@@ -10,6 +10,9 @@ void rt_setjmp3(CPU *c);
     c->r[4] = esp; c->r[5] = ebp; c->r[6] = esi; c->r[7] = edi; } while (0)
 #define RELOAD() do { eax = c->r[0]; ecx = c->r[1]; edx = c->r[2]; ebx = c->r[3]; \
     esp = c->r[4]; ebp = c->r[5]; esi = c->r[6]; edi = c->r[7]; } while (0)
+/* Functions that keep the x87 top index in the local `ft` (X87CACHE in tools/lift.py). */
+#define SPILLF() do { SPILL(); c->top = ft; } while (0)
+#define RELOADF() do { RELOAD(); ft = c->top; } while (0)
 static inline void rt_movsd(uint32_t n, uint32_t dst, uint32_t src) {
     /* forward rep movsd; overlapping copies must behave like the dword loop */
     if (dst <= src || dst >= src + n * 4) memmove(MEM + dst, MEM + src, (size_t)n * 4);

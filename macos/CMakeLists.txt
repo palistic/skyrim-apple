@@ -13,10 +13,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
 get_filename_component(SKYRIM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 option(LB_STRICT_ORDER "Preserve x86 guest memory ordering on ARM64" ON)
+option(LB_CONST_MEM "Generated code treats the guest base pointer as a constant" OFF)
+set(SKYRIM_GEN_FLAGS "" CACHE STRING "Extra compiler flags for the generated code (performance experiments)")
 option(SKYRIM_BUILD_GAME "Link the game using privately generated Windows code" OFF)
 option(SKYRIM_BUNDLED_SDL "Build the pinned SDL2 source instead of relying on Homebrew SDL2" ON)
 option(SKYRIM_FFMPEG_AUDIO "Decode Windows xWMA source voices with private native FFmpeg libraries" ON)
 set(SKYRIM_GEN_DIR "${SKYRIM_ROOT}/gen" CACHE PATH "Privately generated code directory")
+set(SKYRIM_GAME_DIR "" CACHE PATH "Game folder gen/ is bound to; empty uses the one its manifest records")
 
 if(SKYRIM_BUNDLED_SDL)
   set(SDL_SHARED ON CACHE BOOL "Build local SDL2 library" FORCE)
@@ -163,8 +166,12 @@ if(SKYRIM_BUILD_GAME)
   if(NOT EXISTS "${SKYRIM_PYTHON}")
     message(FATAL_ERROR "Run macos/bootstrap.sh to create the private Python environment.")
   endif()
+  set(_game_dir_args)
+  if(SKYRIM_GAME_DIR)
+    set(_game_dir_args --game-dir "${SKYRIM_GAME_DIR}")
+  endif()
   execute_process(COMMAND "${SKYRIM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/inputs.py"
-    verify-generated "${SKYRIM_GEN_DIR}" RESULT_VARIABLE _input_status)
+    verify-generated "${SKYRIM_GEN_DIR}" ${_game_dir_args} RESULT_VARIABLE _input_status OUTPUT_QUIET)
   if(NOT _input_status EQUAL 0)
     message(FATAL_ERROR "Game code is absent or unverified. Run macos/prepare_game.py with your matching game files.")
   endif()
@@ -176,12 +183,17 @@ if(SKYRIM_BUILD_GAME)
     target_compile_definitions(skyrim_generated PRIVATE LB_STRICT_ORDER)
   endif()
   target_compile_options(skyrim_generated PRIVATE -O2 -g0 -fno-strict-aliasing -fwrapv -fsigned-char)
+  if(LB_CONST_MEM)
+    target_compile_definitions(skyrim_generated PRIVATE LB_CONST_MEM)
+  endif()
+  separate_arguments(_gen_flags NATIVE_COMMAND "${SKYRIM_GEN_FLAGS}")
+  target_compile_options(skyrim_generated PRIVATE ${_gen_flags})
   set_property(GLOBAL PROPERTY JOB_POOLS generated_compile=2)
   set_property(TARGET skyrim_generated PROPERTY JOB_POOL_COMPILE generated_compile)
   add_custom_target(verify_game_inputs
     COMMAND "${SKYRIM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/build_receipt.py" begin
       --gen-dir "${SKYRIM_GEN_DIR}" --binary "${CMAKE_CURRENT_BINARY_DIR}/skyrim_macos"
-      --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+      --build-dir "${CMAKE_CURRENT_BINARY_DIR}" ${_game_dir_args}
     BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/skyrim_macos.build-start.json" VERBATIM)
   add_dependencies(skyrim_generated verify_game_inputs)
   add_dependencies(skyrim_runtime verify_game_inputs)
@@ -196,7 +208,7 @@ if(SKYRIM_BUILD_GAME)
   add_custom_command(TARGET skyrim_macos POST_BUILD
     COMMAND "${SKYRIM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/build_receipt.py" seal
       --gen-dir "${SKYRIM_GEN_DIR}" --binary "$<TARGET_FILE:skyrim_macos>"
-      --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+      --build-dir "${CMAKE_CURRENT_BINARY_DIR}" ${_game_dir_args}
       --dependency "dxvk=$<TARGET_FILE:dxvk_d3d9>"
       --dependency "sdl2=$<TARGET_FILE:SDL2::SDL2>"
       --dependency "moltenvk=${SKYRIM_MOLTENVK_LIBRARY}" VERBATIM)

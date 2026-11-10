@@ -121,19 +121,19 @@ def _dependency_identity(dependencies):
     return result
 
 
-def begin(generated_directory, binary, build_directory, *, source_root=ROOT):
-    identity = _identity(generated_directory, build_directory, source_root=source_root)
+def begin(generated_directory, binary, build_directory, game_directory=None, *, source_root=ROOT):
+    identity = _identity(generated_directory, build_directory, game_directory, source_root=source_root)
     start, _receipt = _paths(binary)
     _atomic_json(start, {"schema": SCHEMA, "scope": SCOPE, "identity": identity})
     return identity
 
 
-def seal(generated_directory, binary, build_directory, dependencies, *, source_root=ROOT):
+def seal(generated_directory, binary, build_directory, dependencies, game_directory=None, *, source_root=ROOT):
     start, receipt_path = _paths(binary)
     started = json.loads(start.read_text())
     if started.get("schema") != SCHEMA or started.get("scope") != SCOPE:
         raise ValueError("Missing or unsupported precompile build identity")
-    current = _identity(generated_directory, build_directory, source_root=source_root)
+    current = _identity(generated_directory, build_directory, game_directory, source_root=source_root)
     if current != started["identity"]:
         raise ValueError("Build inputs, source or configuration changed during compilation; rebuild before launch")
     _validate_native_executable(binary)
@@ -182,7 +182,7 @@ def main():
         parser.error("--dependency is only valid with seal")
     try:
         if args.command == "begin":
-            result = begin(args.gen_dir, args.binary, args.build_dir)
+            result = begin(args.gen_dir, args.binary, args.build_dir, args.game_dir)
         elif args.command == "seal":
             dependencies = {}
             for item in args.dependency:
@@ -190,7 +190,7 @@ def main():
                 if not separator or not path or name in dependencies:
                     raise ValueError("Each dependency must have one unique NAME=PATH argument")
                 dependencies[name] = path
-            result = seal(args.gen_dir, args.binary, args.build_dir, dependencies)
+            result = seal(args.gen_dir, args.binary, args.build_dir, dependencies, args.game_dir)
         else:
             result = verify(args.gen_dir, args.binary, args.build_dir, args.game_dir)
     except (OSError, ValueError, KeyError, TypeError) as error:
