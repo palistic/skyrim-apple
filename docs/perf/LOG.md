@@ -178,3 +178,20 @@ Running total: baseline 11.47 → 8.94 ms idle (**−22%**).
 - **visionOS engine:** `ipad/build.py engine --platform visionos` from the regenerated code with
   `LB_CONST_MEM`: `libSkyrimNative.a` sha256 e4849f52…, 143 MB (the previous one, 160 MB, is kept in
   `~/SkyrimAVP/engines/`). Built only; not packaged into the app, not installed, not run.
+
+## 2026-11-10 — a busier scene: `whiterun-market-mac`
+
+- **Why:** the Riverwood route runs into a boulder and stands in a quiet village. The new scenario does
+  `coc whiterunorigin` (the city with its townspeople), stands at the gate looking up the street (*idle*,
+  frames 1800–2400), runs to the market (*run*), then turns the view there in steps (*pan*, using the new
+  scripted look keys `J`/`L` in `runtime/input.c`).
+- **Scripting limits found:** a second console command arrives garbled (after the first Return, keystrokes are
+  dropped until a movement key is pressed, and the old text stays in the input line), so there is no `tgm`;
+  `coc whiterun` lands outside the walls with something attacking, which is why the city cell is used.
+- **Current build, quiet machine:** idle 9.52 ms work per frame, run 8.18, pan 6.73.
+- **Baseline against current, three interleaved pairs, taken while another session was compiling (load
+  average 8–16, so indicative only):** idle 12.90, 12.51, 14.65 against 10.41, 9.87, 9.56; run 12.08, 9.52,
+  12.16 against 9.54, 7.97, 7.36. About a quarter less in both, in line with Riverwood's −22%. The pan phase
+  isn't comparable: the baseline binary predates the look keys and stands still there.
+- Headset versions (`whiterun-market-avp`, `riverwood-walk-avp`) exist with placeholder frame numbers; they
+  need one `bench.py calibrate` on the device first.
