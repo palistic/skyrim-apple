@@ -29,6 +29,10 @@ typedef struct skyrim_immersive_frame {
     uint32_t width;
     uint32_t height;
     void *depth_texture;     /* id<MTLTexture> (R32Float, D3D depth 0 near to 1 far) or NULL; same lifetime */
+    /* The game camera that rendered the frame (NiCamera, Skyrim units, Z up): rotation 3x3 row-major whose
+     * columns are forward, up, right; position; frustum tangents left, right, top, bottom; near; far. */
+    float camera[18];
+    int has_camera;
 } skyrim_immersive_frame;
 void skyrim_immersive_start(void);
 void skyrim_immersive_stop(void);

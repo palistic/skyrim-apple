@@ -12,6 +12,7 @@
 #include <vulkan/vulkan.h>
 #include <mutex>
 #include <stdio.h>
+#include <string.h>
 #include <unordered_map>
 #include "skyrim_present_tap.h"
 
@@ -26,7 +27,10 @@ typedef struct skyrim_immersive_frame {
     uint32_t width;
     uint32_t height;
     void *depth_texture;
+    float camera[18];
+    int has_camera;
 } skyrim_immersive_frame;
+int skyrim_frame_camera(float out[18]);  /* runtime/d3d9_bridge.cpp */
 }
 
 namespace {
@@ -38,6 +42,8 @@ struct Entry {
     uint64_t frame = 0;
     uint64_t depth = 0;
     uint32_t slot = 0, width = 0, height = 0, format = 0;
+    float camera[18] = {};
+    bool has_camera = false;
     bool valid = false;
 };
 
@@ -68,6 +74,7 @@ Entry entry_of(const skyrim_present_tap_frame *frame) {
     entry.height = frame->height;
     entry.format = frame->vk_format;
     entry.depth = frame->depth_vk_image;
+    entry.has_camera = skyrim_frame_camera(entry.camera) != 0;  /* called inside this frame's Present */
     entry.valid = true;
     return entry;
 }
@@ -203,5 +210,7 @@ extern "C" int skyrim_immersive_acquire(skyrim_immersive_frame *out) {
     out->width = g_shown.width;
     out->height = g_shown.height;
     out->depth_texture = (__bridge void *)depth_texture(g_shown);
+    memcpy(out->camera, g_shown.camera, sizeof out->camera);
+    out->has_camera = g_shown.has_camera ? 1 : 0;
     return 1;
 }

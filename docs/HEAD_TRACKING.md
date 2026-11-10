@@ -35,8 +35,13 @@ game turns a frame or two after the head) is hidden by step 3. The hook stays th
       rot[9] row-major: forward = column 0 (r0 r3 r6), up = column 1, right = column 2; at the main menu it is
       the identity-like (forward +Y, up +Z, right +X). Frustum at 16:9: l/r ±0.849, t/b ±0.478, i.e. 80.7° x
       51.1° with PlayerCamera worldFOV 65 (a 4:3 reference); near 15, far 353,840 units outdoors.
-- [ ] Tap carries the camera (rotation, position, frustum) per frame.
-- [ ] Head steering: compositor → runtime head yaw/pitch, mouse-look controller; Mac test with a scripted
-      target angle.
+- [x] Tap carries the camera: `skyrim_frame_camera()` is filled at Present and read by the tap callback, which
+      runs inside Present; `skyrim_immersive_frame.camera`. (Builds; not yet run on the headset.)
+- [x] Head steering (`head_steer` in `runtime/platform_sdl.c`), Mac with `LB_HEAD_TEST=sweep`
+      (`tools/bench/scenarios/head-steer-mac.json`): with a pad connected the game is in gamepad mode and ignores
+      mouse look, so it deflects the right stick (proportional, past a 0.25 dead zone). At gain 7, following a
+      ±34° yaw / ±14° pitch sweep: yaw error mean 2.3°, max 3.6°; pitch mean 0.6°, max 1.7°. Off in menus;
+      the real right stick takes over and re-anchors. The mouse path (no pad) is written but unverified: the
+      bench always has its virtual pad.
 - [ ] Compositor "view" mode: frame at its rendered pose, true FOV, true-scale depth.
 - [ ] Headset: comfort, latency, frame rate.

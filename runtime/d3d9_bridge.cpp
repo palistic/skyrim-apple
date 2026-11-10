@@ -497,6 +497,7 @@ static bool menu_open(void) {
     }
     return open;
 }
+extern "C" int skyrim_menu_open(void) { return menu_open() ? 1 : 0; }
 #endif
 
 static void shot_depth(IDirect3DDevice9 *d) {
@@ -615,7 +616,7 @@ static void pace_present(void) {}
 /* The game's main world camera as it was last set up (TESV 1.9.32.0.8, docs/VISION_PRO_PLAN.md M3): NiCamera W =
  * *(*(0x1B2E8BC)+0xB8); world rotation +0x54 (3x3, row-major), translation +0x78, frustum tangents l r t b +0xE8,
  * near/far +0xF8. Read at Present, i.e. for the frame being shown. */
-struct GameCamera { float rot[9], pos[3], frustum[6]; };
+struct GameCamera { float rot[9], pos[3], frustum[6]; };  /* 18 floats */
 static bool game_camera_read(GameCamera *out) {
     uint32_t root = M32(0x1B2E8BC);
     if (root < 0x10000) return false;
@@ -625,6 +626,16 @@ static bool game_camera_read(GameCamera *out) {
     memcpy(out->pos, MEM + w + 0x78, sizeof out->pos);
     memcpy(out->frustum, MEM + w + 0xE8, sizeof out->frustum);
     return true;
+}
+
+/* The camera of the frame being presented, for the immersive compositor (ipad/immersive_bridge.mm reads it from
+ * the present tap's callback, which runs inside Present on this thread). */
+static GameCamera g_frame_camera;
+static bool g_frame_camera_valid;
+extern "C" int skyrim_frame_camera(float out[18]) {
+    if (!g_frame_camera_valid) return 0;
+    memcpy(out, &g_frame_camera, sizeof g_frame_camera);
+    return 1;
 }
 
 /* LB_CAMLOG=N: log the world camera every N frames (to check the layout above). */
@@ -664,6 +675,7 @@ void B_IDirect3DDevice9_Present(CPU *c) {
 #if defined(__APPLE__)
     // The immersive compositor gets this frame's scene depth with its colour (DXVK present tap). The target is
     // only known to be alive within this frame, so it's named for this Present and forgotten after it.
+    g_frame_camera_valid = game_camera_read(&g_frame_camera);
     skyrim_present_tap_set_depth(menu_open() ? nullptr : d3d_scene_depth_target());
 #endif
     platform_present_begin();

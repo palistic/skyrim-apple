@@ -166,6 +166,18 @@ static void mouse_record(uint32_t ofs, uint32_t data) {
     r->seq = ++g_mouse.seq;
 }
 
+/* Relative mouse motion from the runtime itself (head steering, runtime/platform_sdl.c), straight into the
+ * DirectInput mouse: an event pushed into SDL's queue can be dropped by the platform backend. Any thread. */
+void dinput_inject_mouse(int dx, int dy) {
+    pthread_mutex_lock(&g_di_lock);
+    g_di_fed = 1;
+    g_mouse.dx += dx;
+    g_mouse.dy += dy;
+    if (dx) mouse_record(0, (uint32_t)dx);  /* DIMOFS_X */
+    if (dy) mouse_record(4, (uint32_t)dy);  /* DIMOFS_Y */
+    pthread_mutex_unlock(&g_di_lock);
+}
+
 /* Called by the platform layer for every SDL event it pumps, on any thread. */
 void dinput_handle_event(const SDL_Event *e) {
     pthread_mutex_lock(&g_di_lock);
