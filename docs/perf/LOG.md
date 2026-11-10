@@ -195,3 +195,16 @@ Running total: baseline 11.47 → 8.94 ms idle (**−22%**).
   isn't comparable: the baseline binary predates the look keys and stands still there.
 - Headset versions (`whiterun-market-avp`, `riverwood-walk-avp`) exist with placeholder frame numbers; they
   need one `bench.py calibrate` on the device first.
+
+## 2026-11-10 — a profiler that can be trusted on Apple platforms (`runtime/prof.c`)
+
+- **Problem:** the built-in profiler's SIGPROF samples land on whichever thread the kernel picks, in practice
+  one in a system call, so its tables were wrong (53% `__psynch_cvsignal` where a stack sample shows 1%). On
+  the headset there is no `sample` tool, so the built-in one is the only view of where time goes there.
+- **Change:** on Apple arm64 a sampler thread reads, every 5 ms, the program counter of each thread that is on
+  a core (`task_threads`, `thread_info` run state, `thread_get_state`). The 30 s report prints all threads and
+  then the main thread alone. Other platforms keep SIGPROF.
+- **Check:** main-thread table in Riverwood: `0x472580` 9.0%, `0xB1B6C0` 7.7%, `rt_call` 2.2%, `com_host` 1.8%,
+  which matches `sample` on the same build (8%, 8%, 3%). Idle work with it running: 8.71 ms, no different from
+  without.
+- **Verdict:** keep; it is on by default like the old one (`noprof.txt` turns it off).
