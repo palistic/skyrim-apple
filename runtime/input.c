@@ -185,6 +185,11 @@ void input_handle_event(const SDL_Event *e) {
                 if (e->key.keysym.sym == wasd[i]) held[i] = e->type == SDL_KEYDOWN;
             g_virt.lx = (int16_t)((held[3] ? 32767 : 0) - (held[1] ? 32767 : 0));
             g_virt.ly = (int16_t)((held[0] ? 32767 : 0) - (held[2] ? 32767 : 0));
+            /* J and L = right stick left and right, so a scripted route (LB_KEYS) can turn */
+            static int look[2];
+            if (e->key.keysym.sym == SDLK_j) look[0] = e->type == SDL_KEYDOWN;
+            if (e->key.keysym.sym == SDLK_l) look[1] = e->type == SDL_KEYDOWN;
+            g_virt.rx = (int16_t)((look[1] ? 32767 : 0) - (look[0] ? 32767 : 0));
             g_packet++;
         }
         break;
