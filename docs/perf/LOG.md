@@ -244,6 +244,8 @@ Running total: baseline 11.47 → 8.94 ms idle (**−22%**).
   work time is 6.1–6.2 ms.
 - `Present` stays at 0.0–0.1 ms in every pacing line, so in the window at this resolution the headset is
   limited by the game's CPU, as on the M1. All four runs exited cleanly at the exit frame.
+- **Thermal state:** nominal through both A runs; it moved to fair during the first B run (the fourth
+  consecutive run), so B's numbers were taken in the warmer state and are, if anything, pessimistic.
 - **Not yet known:** the immersive screen's cost (compositor at 90 Hz plus the tap), busier or combat scenes,
   and long-session thermals. The depth build (`depth-v2`, binary 2569a7db…) was installed at the end of the
   session for the "Skyrim - M1" session's immersive test.
