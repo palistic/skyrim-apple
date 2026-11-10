@@ -131,3 +131,34 @@ verdicts use idle and report run alongside.
 | + `LB_CONST_MEM` | 11.10 | −3% |
 | + x87 register cache | 9.42 | −18% |
 | + native `0x472580` | 9.28 | −19% |
+
+## 2026-11-10 — lock-free COM object lookup in the D3D9 bridge
+
+- **Hypothesis:** a second profile (after the x87 cache) showed 113 of 2,040 main-thread on-CPU samples in
+  pthread mutex slow paths, 109 of them under `com_host`, which takes a recursive mutex on every D3D9 call only
+  to index a vector that another thread might grow.
+- **Change (`runtime/d3d9_bridge.cpp`):** the id → object table grows in chunks that never move, entries and
+  the count are atomics, and `com_host` reads without the lock. Writers (`com_wrap`, `com_forget`) still hold it.
+- **Runtime, six interleaved pairs (idle work ms):** before 9.26, 8.93, 9.22, 9.16, 9.38, 9.26 (mean 9.20);
+  after 8.72, 8.77, 9.17, 8.77, 9.20, 9.03 (mean 8.94). **−2.8% idle**, lower in all six pairs; run phase
+  8.68 → 8.32 (**−4.1%**).
+- **Verdict:** keep. Not committed: the file also carries the planning session's uncommitted changes.
+- **Same profile, other notes:** `0x472580` is still 8% of the main thread as a native function (so its cost
+  is the memory it reads), the six-plane loop that calls it (`0xB1B6C0`) another 8%, indirect-call dispatch
+  (`rt_call`) 3%.
+
+Running total: baseline 11.47 → 8.94 ms idle (**−22%**).
+
+## 2026-11-10 — `LB_STRICT_ORDER` off (measurement only; the decision is the maintainer's)
+
+- **Build:** same code as the current best (x87 cache, const base, native function, lock-free COM lookup), with
+  `-DLB_STRICT_ORDER=OFF`. The executable shrinks from 110 MB to 90 MB.
+- **Runtime:** macOS was indexing in the background during every run (Spotlight and media analysis, load
+  average 8–12), so the spread is about three times the usual and these are indicative only. Idle work ms,
+  interleaved: strict 8.60, 8.84, 9.75, 9.29 (mean 9.12); off 8.17, 8.71, 7.91, 7.82 (mean 8.15).
+  **About −11%**, off lower in all four pairs.
+- **Failures:** none in five full runs (4,300 frames each, clean exits, no fatal or unimplemented-instruction
+  lines). That is far too little to say it is safe: the ordering exists for races between threads, and this
+  scenario exercises loading once and then a quiet scene.
+- **Verdict:** worth the maintainer's attention as roughly a tenth of the main thread, but needs a quiet-machine
+  rerun and long play sessions on several cores before anyone turns it off.
