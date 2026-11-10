@@ -162,3 +162,19 @@ Running total: baseline 11.47 → 8.94 ms idle (**−22%**).
   scenario exercises loading once and then a quiet scene.
 - **Verdict:** worth the maintainer's attention as roughly a tenth of the main thread, but needs a quiet-machine
   rerun and long play sessions on several cores before anyone turns it off.
+
+## 2026-11-10 — depth for stereo, and a visionOS engine with the changes
+
+- **Frame structure** (one Riverwood frame, `LB_D3DTRACE` with the new render-target lines): 2,013 draws in
+  about 27 passes. Two 512×512 targets (17 draws), a 512×1024 shadow map (268), a 960×540 reflection (197), the
+  main scene into a 1280×720 16-bit float target (620), then **the scene's depth again into a 1280×720 R32F
+  colour target (638 draws)**, effects and first-person passes, the luminance chain, and the final image.
+- **Depth capture:** `LB_SHOT` now also writes that R32F target (`depth-<frame>.f32`). Values are D3D depth
+  (0.92–1.0 in the test frame, 1 = sky); with the near plane at 15 units the nearest surface is 2.7 m away and
+  the median 17 m.
+- **Offline stereo** (`tools/stereo_proto.py`, 64 mm eye separation): largest shift 8.9 px per eye at 1280
+  wide, 1.9% of pixels unresolved, all at depth edges. The HUD moves with the scene behind it, so it needs its
+  own panel. Details in `IMMERSIVE_OPTIONS.md`.
+- **visionOS engine:** `ipad/build.py engine --platform visionos` from the regenerated code with
+  `LB_CONST_MEM`: `libSkyrimNative.a` sha256 e4849f52…, 143 MB (the previous one, 160 MB, is kept in
+  `~/SkyrimAVP/engines/`). Built only; not packaged into the app, not installed, not run.
