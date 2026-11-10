@@ -34,13 +34,14 @@ private struct QuadUniforms {
     /// Game near plane in game units, and game units per meter.
     var nearUnits: Float
     var unitsPerMeter: Float
-    /// How far behind the screen the farthest scenery appears, as a multiple of eyeBack (0.25: 0.75 m); 0 = flat.
+    /// Meters behind the screen per game meter (the screen is a window onto a scaled-down scene); 0 = flat.
     var depthScale: Float
-    /// Distance (meters) mapped onto the screen plane; nearer comes out in front, up to `nearestOut`.
-    var screenMeters: Float
+    /// The farthest anything is placed behind the screen (meters); the sky and far scenery sit here.
+    var maxBehind: Float
     /// 1: draw the image pushed to the farthest depth, behind the mesh, to fill where torn triangles were dropped.
     var backplate: Float
-    /// A triangle whose corners' depths differ by more than this (meters) is dropped rather than stretched.
+    /// A triangle whose far corner is more than (1 + tear) times as far from the eye as its near one is dropped
+    /// rather than stretched.
     var tear: Float
 }
 
@@ -52,7 +53,7 @@ final class ImmersiveCompositor: @unchecked Sendable {
     using namespace metal;
     struct Uniforms {
         float4x4 viewProjection; float4x4 model; float2 halfSize; uint decode; uint hasDepth;
-        uint2 grid; float eyeBack; float nearUnits; float unitsPerMeter; float depthScale; float screenMeters; float backplate;
+        uint2 grid; float eyeBack; float nearUnits; float unitsPerMeter; float depthScale; float maxBehind; float backplate;
         float tear;
     };
     struct Out { float4 position [[position]]; float2 uv; };
@@ -61,7 +62,10 @@ final class ImmersiveCompositor: @unchecked Sendable {
     // in the game: the screen
     // becomes a window into the scene and each eye sees it from its own place.
     // How far along its ray (as a multiple of the ray to the screen) the game pixel at uv is pushed.
-    float ray_scale(float2 uv, constant Uniforms &u, texture2d<float> depth) {
+    // How far behind the screen (meters, along the viewer's ray) the game pixel at uv sits. The screen is a window:
+    // everything is behind it, at depthScale meters per game meter, up to maxBehind. A consistent geometry (unlike a
+    // relief pushed out of the screen), so the eyes converge where the picture is.
+    float behind_screen(float2 uv, constant Uniforms &u, texture2d<float> depth) {
         constexpr sampler nearest(address::clamp_to_edge, filter::nearest);
         // The nearest depth around the point (half a grid cell each way), so a thin foreground edge keeps its depth
         // instead of a vertex landing beside it in the background.
@@ -73,9 +77,10 @@ final class ImmersiveCompositor: @unchecked Sendable {
         d = min(d, depth.sample(nearest, uv + float2(0, cell.y), level(0)).r);
         // D3D depth with a far plane much farther than the near one: view distance ~ near / (1 - d).
         float meters = (u.nearUnits / max(1.0 - d, 1e-6)) / u.unitsPerMeter;
-        // 0 at the screen distance, approaching 1 for scenery at infinity; nearer than the screen is negative.
-        float behind = 1.0 - u.screenMeters / max(meters, 0.05);
-        return 1.0 + u.depthScale * clamp(behind, -0.15, 1.0);
+        return min(u.depthScale * meters, u.maxBehind);
+    }
+    float3 screen_point(float2 uv, constant Uniforms &u) {
+        return float3((uv.x * 2 - 1) * u.halfSize.x, (1 - uv.y * 2) * u.halfSize.y, 0);
     }
     // Fades the push to nothing over the outer 4% so the picture's outline stays a clean rectangle. Applied after the
     // tear test, so the fade's own slope doesn't count as a depth edge.
@@ -94,23 +99,29 @@ final class ImmersiveCompositor: @unchecked Sendable {
         uint2 cell = uint2(cellIndex % (u.grid.x - 1), cellIndex / (u.grid.x - 1));
         float2 step = 1.0 / float2(u.grid - 1);
         float2 uv = float2(cell + corners[corner]) * step;
-        float3 onScreen = float3((uv.x * 2 - 1) * u.halfSize.x, (1 - uv.y * 2) * u.halfSize.y, 0);
+        float3 onScreen = screen_point(uv, u);
         float3 eye = float3(0, 0, u.eyeBack);
         float3 p = onScreen;
         Out out;
         out.uv = uv;
+        float3 ray = onScreen - eye;
+        float toScreen = length(ray);
         if (u.backplate != 0) {
-            p = eye + (onScreen - eye) * (1.0 + u.depthScale * edge_fade(uv));
+            p = eye + ray * (1.0 + u.maxBehind * edge_fade(uv) / toScreen);
         } else if (u.hasDepth) {
-            float t0 = ray_scale(float2(cell + corners[first]) * step, u, depth);
-            float t1 = ray_scale(float2(cell + corners[first + 1]) * step, u, depth);
-            float t2 = ray_scale(float2(cell + corners[first + 2]) * step, u, depth);
-            if ((max(t0, max(t1, t2)) - min(t0, min(t1, t2))) * u.eyeBack > u.tear) {
+            // Distances from the eye of the triangle's corners; a triangle whose far corner is more than (1 + tear)
+            // times as far as its near one spans an object's edge.
+            float2 c0 = float2(cell + corners[first]) * step, c1 = float2(cell + corners[first + 1]) * step,
+                   c2 = float2(cell + corners[first + 2]) * step;
+            float r0 = length(screen_point(c0, u) - eye) + behind_screen(c0, u, depth);
+            float r1 = length(screen_point(c1, u) - eye) + behind_screen(c1, u, depth);
+            float r2 = length(screen_point(c2, u) - eye) + behind_screen(c2, u, depth);
+            if (max(r0, max(r1, r2)) > min(r0, min(r1, r2)) * (1.0 + u.tear)) {
                 out.position = float4(0, 0, 0, 1);  // same point for all three corners: no area, nothing drawn
                 return out;
             }
-            float t = corner == first ? t0 : (corner == first + 1 ? t1 : t2);
-            p = eye + (onScreen - eye) * (1.0 + (t - 1.0) * edge_fade(uv));
+            float r = corner == first ? r0 : (corner == first + 1 ? r1 : r2);
+            p = eye + ray * (1.0 + (r - toScreen) * edge_fade(uv) / toScreen);
         }
         out.position = u.viewProjection * u.model * float4(p, 1);
         return out;
@@ -141,7 +152,7 @@ final class ImmersiveCompositor: @unchecked Sendable {
     private var presented = 0, newFrames = 0, loggedAt = CACurrentMediaTime()
     /// Grid size: one vertex every 4 game pixels.
     private static let gridColumns: UInt32 = 321, gridRows: UInt32 = 181
-    private var depthSettings: (scale: Float, screen: Float, near: Float, units: Float, tear: Float, on: Bool)?
+    private var depthSettings: (scale: Float, maxBehind: Float, near: Float, units: Float, tear: Float, on: Bool)?
     private var loggedDepth = false
 
     init(layer: LayerRenderer) {
@@ -176,18 +187,18 @@ final class ImmersiveCompositor: @unchecked Sendable {
     /// Depth tuning from the launch environment (LB_ prefix, Documents/SkyrimNative/launch-env.json), read once the
     /// game is running: LB_IMMERSIVE_DEPTH=0 shows the flat screen; LB_IMMERSIVE_DEPTH_SCALE, _SCREEN_M, _NEAR,
     /// _UNITS_PER_M override the defaults.
-    private func readDepthSettings() -> (scale: Float, screen: Float, near: Float, units: Float, tear: Float, on: Bool) {
+    private func readDepthSettings() -> (scale: Float, maxBehind: Float, near: Float, units: Float, tear: Float, on: Bool) {
         if let depthSettings { return depthSettings }
         func number(_ name: String, _ fallback: Float) -> Float {
             guard let raw = getenv(name), let value = Float(String(cString: raw)) else { return fallback }
             return value
         }
         let on = getenv("LB_IMMERSIVE_DEPTH").map { String(cString: $0) != "0" } ?? true
-        let settings = (scale: number("LB_IMMERSIVE_DEPTH_SCALE", 0.25), screen: number("LB_IMMERSIVE_DEPTH_SCREEN_M", 3.0),
+        let settings = (scale: number("LB_IMMERSIVE_DEPTH_SCALE", 0.15), maxBehind: number("LB_IMMERSIVE_DEPTH_MAX_M", 30.0),
                         near: number("LB_IMMERSIVE_DEPTH_NEAR", 15.0), units: number("LB_IMMERSIVE_DEPTH_UNITS_PER_M", 70.0),
-                        tear: number("LB_IMMERSIVE_DEPTH_TEAR_M", 0.05), on: on)
+                        tear: number("LB_IMMERSIVE_DEPTH_TEAR", 0.08), on: on)
         depthSettings = settings
-        log("depth \(on ? "on" : "off"): scale \(settings.scale), screen \(settings.screen) m, near \(settings.near) units, \(settings.units) units/m, tear \(settings.tear) m")
+        log("depth \(on ? "on" : "off"): scale \(settings.scale) m/m, up to \(settings.maxBehind) m behind, near \(settings.near) units, \(settings.units) units/m, tear ratio \(settings.tear)")
         return settings
     }
 
@@ -308,7 +319,7 @@ final class ImmersiveCompositor: @unchecked Sendable {
                 if let texture, let model, let pipeline, let depth {
                     let viewMatrix = (head * view.transform).inverse
                     let aspect = game.height > 0 ? Float(game.width) / Float(game.height) : 16.0 / 9.0
-                    let settings = depthTexture != nil ? readDepthSettings() : (scale: 0, screen: 3, near: 15, units: 70, tear: 0.05, on: false)
+                    let settings = depthTexture != nil ? readDepthSettings() : (scale: 0, maxBehind: 0, near: 15, units: 70, tear: 0.08, on: false)
                     let useDepth = settings.on && depthTexture != nil
                     // Rays start at the viewer's starting head position, not at where the game's 75-degree camera would
                     // sit: a point moved along a ray from the viewer's own eye looks unchanged from there, so the
@@ -322,7 +333,7 @@ final class ImmersiveCompositor: @unchecked Sendable {
                                                 hasDepth: useDepth ? 1 : 0,
                                                 grid: SIMD2(Self.gridColumns, Self.gridRows),
                                                 eyeBack: eyeBack, nearUnits: settings.near, unitsPerMeter: settings.units,
-                                                depthScale: settings.scale, screenMeters: settings.screen, backplate: 0,
+                                                depthScale: settings.scale, maxBehind: settings.maxBehind, backplate: 0,
                                                 tear: settings.tear)
                     encoder.setRenderPipelineState(pipeline)
                     encoder.setDepthStencilState(depth)
