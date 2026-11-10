@@ -169,6 +169,9 @@ static void mouse_record(uint32_t ofs, uint32_t data) {
 /* Relative mouse motion from the runtime itself (head steering, runtime/platform_sdl.c), straight into the
  * DirectInput mouse: an event pushed into SDL's queue can be dropped by the platform backend. Any thread. */
 void dinput_inject_mouse(int dx, int dy) {
+    static int invert = -1;  /* LB_TEST_INVERT_Y=1: behave like the game's Invert Y option, for testing */
+    if (invert < 0) invert = getenv("LB_TEST_INVERT_Y") && *getenv("LB_TEST_INVERT_Y") == '1';
+    if (invert) dy = -dy;
     pthread_mutex_lock(&g_di_lock);
     g_di_fed = 1;
     g_mouse.dx += dx;

@@ -170,8 +170,18 @@ final class ImmersiveCompositor: @unchecked Sendable {
     private var loggedDepth = false
     /// Head tracking (LB_IMMERSIVE_HEAD=1, docs/HEAD_TRACKING.md): the head steers the game camera and each frame
     /// is drawn where its camera pointed, at true depth. The head's starting heading and position.
-    private lazy var headMode: Bool = getenv("LB_IMMERSIVE_HEAD").map { String(cString: $0) == "1" } ?? false
+    /// Read once the game is running: launch-env.json is applied when the game starts, after this layer opens.
+    private var headModeSetting: Bool?
+    private var headMode: Bool {
+        if let headModeSetting { return headModeSetting }
+        guard checkedDevice else { return false }  // the game is presenting, so it has started
+        let on = getenv("LB_IMMERSIVE_HEAD").map { String(cString: $0) == "1" } ?? false
+        headModeSetting = on
+        log("head tracking \(on ? "on" : "off")")
+        return on
+    }
     private var headStartYaw: Float?
+    private var lastTracked = false
     private var headStartPosition = SIMD3<Float>(0, 0, 0)
     /// Distance of the plane the frame's grid is laid on before depth moves it (any value works in true depth).
     private static let viewPlane: Float = 2.0
@@ -373,6 +383,10 @@ final class ImmersiveCompositor: @unchecked Sendable {
                         halfSize = SIMD2(Self.viewPlane * c[13], Self.viewPlane * c[14])
                     }
                 }
+                // Menus and loading come without a camera: show them on a screen placed ahead of where the head
+                // looks as they appear, not where the session started.
+                if halfSize == nil, lastTracked { screen = nil; model = place(head: head) }
+                lastTracked = halfSize != nil
             }
             for (index, view) in drawable.views.enumerated() {
                 let pass = MTLRenderPassDescriptor()

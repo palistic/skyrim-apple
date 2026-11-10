@@ -687,7 +687,9 @@ void B_IDirect3DDevice9_Present(CPU *c) {
 #if defined(__APPLE__)
     // The immersive compositor gets this frame's scene depth with its colour (DXVK present tap). The target is
     // only known to be alive within this frame, so it's named for this Present and forgotten after it.
-    g_frame_camera_valid = game_camera_read(&g_frame_camera);
+    /* With a menu up the world camera isn't what's on screen (the journal, for one, renders through another
+     * camera), so the frame carries none and the compositor shows it on its fixed screen. */
+    g_frame_camera_valid = !menu_open() && game_camera_read(&g_frame_camera);
     game_fov_apply();
     skyrim_present_tap_set_depth(menu_open() ? nullptr : d3d_scene_depth_target());
 #endif

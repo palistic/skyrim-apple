@@ -133,7 +133,7 @@ static void head_steer(void) {
         if (t && !strcmp(t, "sweep")) test = 2;
         else if (t && sscanf(t, "%f,%f", &test_yaw, &test_pitch) >= 1) test = 1;
         counts = getenv("LB_HEAD_COUNTS") ? (float)atof(getenv("LB_HEAD_COUNTS")) : 1000.0f;
-        gain = getenv("LB_HEAD_GAIN") ? (float)atof(getenv("LB_HEAD_GAIN")) : 0.4f;
+        gain = getenv("LB_HEAD_GAIN") ? (float)atof(getenv("LB_HEAD_GAIN")) : 0.2f;
         stick_gain = getenv("LB_HEAD_STICK_GAIN") ? (float)atof(getenv("LB_HEAD_STICK_GAIN")) : 7.0f;
         stick_dead = getenv("LB_HEAD_STICK_DEAD") ? (float)atof(getenv("LB_HEAD_STICK_DEAD")) : 0.25f;
         if (test) LOG("head: test %s, %.0f counts/rad, gain %.2f", t, counts, gain);
@@ -161,7 +161,8 @@ static void head_steer(void) {
         return;
     }
     float err_yaw = head_wrap(head_yaw + offset - game_yaw);
-    float err_pitch = fmaxf(-1.4f, fminf(1.4f, head_pitch)) - game_pitch;
+    float err_pitch = fmaxf(-1.1f, fminf(1.1f, head_pitch)) - game_pitch;
+    if (fabsf(game_pitch) > 1.2f) err_yaw = 0;  /* looking nearly straight up or down: the heading is meaningless */
     void input_head_stick(float x, float y);
     int input_pad_connected(void), input_right_stick_moved(void);
     if (input_right_stick_moved()) { g_head_external = 15; input_head_stick(0, 0); return; }
@@ -180,16 +181,47 @@ static void head_steer(void) {
         return;
     }
     input_head_stick(0, 0);
-    carry_x += err_yaw * counts * gain;
-    carry_y -= err_pitch * counts * gain;   /* mouse down = look down */
+    /* Mouse path. How far the game turns per count depends on the player's sensitivity setting, so the gain is
+     * kept low (stable up to several times the default sensitivity; on the Mac at the default it follows a 27
+     * deg/s sweep about 10 deg behind) and each frame's motion is capped. Y inversion isn't handled. */
+    static float prev_err, ysign = 1, win_dy, win_pitch0;
+    static int diverging, win_n;
+    const float kx = counts, ky = counts;
+    /* Inverted Y (the game's Invert Y Axis option): over 20-frame windows, if the pitch moved against the
+     * vertical motion sent, flip the sign. Uninverted, mouse down (dy > 0) looks down. */
+    if (win_n == 0) { win_pitch0 = game_pitch; win_dy = 0; }
+    if (++win_n >= 20) {
+        float tilted = game_pitch - win_pitch0;
+        /* expected: dy > 0 tilts down (tilted < 0) when ysign = 1, up when ysign = -1 */
+        if (fabsf(win_dy) > 40 && fabsf(tilted) > 0.02f && (tilted > 0) == ((win_dy > 0) == (ysign > 0))) {
+            ysign = -ysign;
+            LOG("head: vertical mouse looks inverted; flipping (now %s)", ysign > 0 ? "normal" : "inverted");
+        }
+        win_n = 0;
+    }
+    /* Safety: an error that keeps growing past 40 degrees means the loop is fighting the game; stop and re-anchor. */
+    float err_abs = fabsf(err_yaw) + fabsf(err_pitch);
+    diverging = err_abs > 0.7f && err_abs > prev_err ? diverging + 1 : 0;
+    prev_err = err_abs;
+    if (diverging > 30) {
+        LOG("head: mouse steering diverged (error %.0f deg); re-anchoring", err_abs * 57.3f);
+        diverging = 0; anchored = 0; atomic_store(&g_head_anchored, 0);
+        return;
+    }
+    carry_x += err_yaw * kx * gain;
+    carry_y -= err_pitch * ky * gain * ysign;   /* mouse down = look down, unless inverted */
+    float cap = 40;
+    carry_x = fmaxf(-cap, fminf(cap, carry_x));
+    carry_y = fmaxf(-cap, fminf(cap, carry_y));
     int dx = (int)carry_x, dy = (int)carry_y;
     carry_x -= dx;
     carry_y -= dy;
-    if (test && frame - logged >= 30) {
+    win_dy += dy;
+    if (frame - logged >= (test ? 30 : 600)) {
         logged = frame;
-        LOG("head: frame %d target %.1f/%.1f game %.1f/%.1f err %.2f/%.2f deg sent %d,%d", frame,
+        LOG("head: mouse target %.1f/%.1f game %.1f/%.1f err %.2f/%.2f deg sent %d,%d (%.0f counts/rad/frame)",
             (head_yaw + offset) * 57.29578f, head_pitch * 57.29578f, game_yaw * 57.29578f, game_pitch * 57.29578f,
-            err_yaw * 57.29578f, err_pitch * 57.29578f, dx, dy);
+            err_yaw * 57.29578f, err_pitch * 57.29578f, dx, dy, kx * gain);
     }
     if (!dx && !dy) return;
     void dinput_inject_mouse(int dx, int dy);
