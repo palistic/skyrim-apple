@@ -220,15 +220,33 @@ extern "C" int skyrim_native_run(const char *save_root, char *error, size_t erro
         setenv("DXVK_LOG_PATH", logs.fileSystemRepresentation, 0);
         /* GPU work rejected while the app goes inactive must not leave the device lost for good. */
         setenv("MVK_CONFIG_RESUME_LOST_DEVICE", "1", 0);
+#if TARGET_OS_VISION
+        setenv("LB_PRESENT_TAP", "1", 0);  /* read once at swapchain creation; idle until the compositor registers */
+#endif
         logIdentity(game, saves);
+        /* Thermal state, for reading frame times: a throttled run isn't comparable with a cool one. */
+        static const char *const thermal[] = {"nominal", "fair", "serious", "critical"};
+        NSInteger state = NSProcessInfo.processInfo.thermalState;
+        fprintf(stderr, "native: thermal %s\n", state >= 0 && state < 4 ? thermal[state] : "unknown");
+        [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil
+                                                         queue:nil usingBlock:^(NSNotification *) {
+            NSInteger now = NSProcessInfo.processInfo.thermalState;
+            fprintf(stderr, "native: thermal %s\n", now >= 0 && now < 4 ? thermal[now] : "unknown");
+        }];
 
         /* The game holds its frames while the launcher is inactive: iOS allows no GPU work in
          * the background, and Control Center or the app switcher also deactivate it. */
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil
-                        usingBlock:^(NSNotification *) { platform_native_set_suspended(1); }];
+                        usingBlock:^(NSNotification *) {
+            fprintf(stderr, "native: app resigning active\n");
+            platform_native_set_suspended(1);
+        }];
         [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil
-                        usingBlock:^(NSNotification *) { platform_native_set_suspended(0); }];
+                        usingBlock:^(NSNotification *) {
+            fprintf(stderr, "native: app active\n");
+            platform_native_set_suspended(0);
+        }];
         /* SDL applies its idle-timer hint only from its own app delegate, which this app doesn't
          * use: keep the screen awake directly while the game runs. */
         UIApplication.sharedApplication.idleTimerDisabled = YES;

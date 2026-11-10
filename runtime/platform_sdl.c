@@ -21,12 +21,13 @@
  * without pumping, and the main thread (which presents in menus and play)
  * pumps. Android and the iOS targets keep their existing behaviour. */
 #define LB_MAC_MAIN_PUMP 1
-#elif !TARGET_OS_SIMULATOR
+#elif !TARGET_OS_SIMULATOR || TARGET_OS_VISION
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach.h>
 #include <pthread.h>
 #include <stdatomic.h>
-/* Physical iPhone/iPad: the game runs inside the launcher app on its main
+/* Physical iPhone/iPad and Vision Pro (and the visionOS Simulator, which
+ * has no separate frontend): the game runs inside the launcher app on its main
  * thread (ipad/native_bridge.mm). The launcher pauses it (input gate),
  * suspends it while in the background (no GPU work is allowed there) and can
  * end it; all three take effect at the next presented frame. */
@@ -58,6 +59,107 @@ static void capture_mouse(void) {
     if (SDL_SetRelativeMouseMode(SDL_TRUE) == 0) LOG("mouse: captured for the game window");
     else { LOG("mouse: relative mode unavailable: %s", SDL_GetError()); wanted = 0; }
 }
+#endif
+
+#if defined(LB_IOS_DEVICE) && TARGET_OS_VISION
+/* The SDL overlay's edge turn (ipad/visionos/sdl/SDL_uikit_xros.m): while the pointer is pushed against a side of
+ * the window, feed the game the motion it can no longer get. LB_EDGE_TURN is the full rate in mouse counts per
+ * second (0 turns it off). Main thread only. */
+float skyrim_xr_pointer_edge(void);
+static void edge_turn(void) {
+    static double rate = -1, last, carry;
+    if (rate < 0) {
+        const char *v = getenv("LB_EDGE_TURN");
+        rate = v && *v ? atof(v) : 2400.0;
+        LOG("mouse: edge turn at %.0f counts/s", rate);
+    }
+    double now = (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+    double dt = last > 0 && now - last < 0.1 ? now - last : 0;
+    last = now;
+    float edge = skyrim_xr_pointer_edge();
+    if (!rate || !edge || !g_window || !SDL_GetRelativeMouseMode()) { carry = 0; return; }
+    carry += edge * rate * dt;
+    int dx = (int)carry;
+    if (!dx) return;
+    carry -= dx;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = SDL_MOUSEMOTION;
+    e.motion.windowID = SDL_GetWindowID(g_window);
+    e.motion.xrel = dx;
+    SDL_PushEvent(&e);
+}
+#endif
+
+/* Frame pacing for the device log, every 300 frames: whole-frame time, and the part spent inside D3D9 Present
+ * (where the game blocks when the GPU is behind). Long frames with short Presents point at the CPU. */
+#if defined(LB_IOS_DEVICE) || defined(LB_MAC_MAIN_PUMP)
+#define LB_PACE_LOG 1
+static double g_present_began, g_present_sum, g_present_max, g_present_last, g_slept_last;
+void platform_present_slept(double ms) { g_slept_last = ms; }
+static double pace_now_ms(void) { return (double)SDL_GetPerformanceCounter() * 1000.0 / (double)SDL_GetPerformanceFrequency(); }
+void platform_present_begin(void) { g_present_began = pace_now_ms(); }
+void platform_present_end(void) {
+    double took = pace_now_ms() - g_present_began;
+    g_present_last = took;
+    g_present_sum += took;
+    if (took > g_present_max) g_present_max = took;
+}
+/* Benchmark runs (tools/bench): LB_FRAMETIMES=1 logs every frame as "ft <frame> <frame ms> <Present ms> <work ms>",
+ * where work is the frame time without the 60 fps pacing sleep and without Present (the game's own CPU time);
+ * LB_EXIT_FRAME=N ends the game cleanly once frame N is presented. */
+#ifdef LB_IOS_DEVICE
+void platform_native_request_quit(void);
+#else
+/* the Mac build (macos/, used for benchmarking the lifted code): no launcher to ask, leave directly */
+static void platform_native_request_quit(void) { fflush(NULL); _exit(0); }
+#endif
+static void bench_frame(double took) {
+    static int frametimes = -1, exit_frame = -1;
+    if (frametimes < 0) {
+        const char *v = getenv("LB_FRAMETIMES");
+        frametimes = v && *v == '1';
+        v = getenv("LB_EXIT_FRAME");
+        exit_frame = v && *v ? atoi(v) : 0;
+        if (frametimes || exit_frame) LOG("bench: frame times %s, exit at frame %d", frametimes ? "on" : "off", exit_frame);
+    }
+    if (frametimes) {
+        double work = took - g_present_last - g_slept_last;
+        LOG("ft %d %.2f %.2f %.2f", g_frames, took, g_present_last, work > 0 ? work : 0);
+    }
+    g_slept_last = 0;
+    if (exit_frame > 0 && g_frames == exit_frame) {
+        LOG("bench: exit frame %d reached", g_frames);
+        platform_native_request_quit();
+    }
+}
+static void pace_frame(void) {
+    static double last, sum, worst;
+    static int n, over33, over50;
+    double now = pace_now_ms();
+    if (last > 0) {
+        double took = now - last;
+        sum += took;
+        if (took > worst) worst = took;
+        n++;
+        over33 += took > 33.4;
+        over50 += took > 50.0;
+        bench_frame(took);
+    } else {
+        bench_frame(0);
+    }
+    last = now;
+    if (n >= 300) {
+        LOG("pacing: frame %.1f ms avg (%.0f fps), worst %.1f, %d over 33 ms, %d over 50 ms; Present %.1f ms avg, worst %.1f",
+            sum / n, 1000.0 * n / sum, worst, over33, over50, g_present_sum / n, g_present_max);
+        n = over33 = over50 = 0;
+        sum = worst = g_present_sum = g_present_max = 0;
+    }
+}
+#else
+void platform_present_begin(void) {}
+void platform_present_end(void) {}
+void platform_present_slept(double ms) { (void)ms; }
 #endif
 
 #ifdef LB_IOS_DEVICE
@@ -442,9 +544,14 @@ void platform_present_hook(void) {
     script_events();
 #ifdef LB_MAC_MAIN_PUMP
     if (pthread_main_np()) capture_mouse();
+    pace_frame();
 #endif
 #ifdef LB_IOS_DEVICE
     if (pthread_main_np()) capture_mouse();
+#if TARGET_OS_VISION
+    if (pthread_main_np()) edge_turn();
+#endif
+    pace_frame();
     static atomic_int first_frame_logged;
     if (!atomic_exchange(&first_frame_logged, 1)) {
         LOG("platform: first frame presented (%s thread)", pthread_main_np() ? "main" : "secondary");

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build the pinned minimal WMA decoder libraries for the physical iPad (arm64 iphoneos).
+"""Build the pinned minimal WMA decoder libraries for the physical iPad (arm64 iphoneos) Vision Pro (--sdk xros)
+or the visionOS Simulator (--sdk xrsimulator).
 
 Same FFmpeg 7.1.2 source and configuration as macos/audio/build_ffmpeg.py, for the device
 SDK. The official source archive is downloaded once into the ignored ipad/deps/, or read in
@@ -23,26 +24,34 @@ sys.path.insert(0, str(ROOT / "macos/audio"))
 from build_ffmpeg import SOURCE_SHA256, URL, VERSION, run  # noqa: E402
 from pinned import obtain, sha256  # noqa: E402
 
-TRIPLE = "arm64-apple-ios17.0"
+TRIPLES = {"iphoneos": "arm64-apple-ios17.0", "xros": "arm64-apple-xros26.5",
+           "xrsimulator": "arm64-apple-xros26.5-simulator"}
+TRIPLE = TRIPLES["iphoneos"]
 DEPS = ROOT / "ipad/deps"
 PREFIX = DEPS / "ffmpeg-iphoneos"
 
 
-def verified_manifest(prefix=PREFIX):
+def prefix_for(sdk):
+    return DEPS / f"ffmpeg-{sdk}"
+
+
+def verified_manifest(prefix=PREFIX, sdk="iphoneos"):
     """The existing device build's receipt if its pinned source and archives still match; None if absent."""
     path = prefix / "build-manifest.json"
     if not path.exists():
         return None
     manifest = json.loads(path.read_text())
     archives = manifest.get("archives", {})
-    if (manifest.get("source_archive_sha256") != SOURCE_SHA256 or manifest.get("platform") != "iphoneos"
+    if (manifest.get("source_archive_sha256") != SOURCE_SHA256 or manifest.get("platform") != sdk
+            or manifest.get("triple", TRIPLES[sdk]) != TRIPLES[sdk]
             or set(archives) != {"avcodec", "avutil"} or any(sha256(a["path"]) != a["sha256"] for a in archives.values())):
         raise ValueError(f"{prefix} differs from its build manifest or the pinned FFmpeg {VERSION}; preserve it and inspect")
     return manifest
 
 
-def build_libraries(source_archive, jobs):
-    build, prefix = ROOT / "ipad/build/ffmpeg-iphoneos", PREFIX
+def build_libraries(source_archive, jobs, sdk_name="iphoneos"):
+    build, prefix = ROOT / f"ipad/build/ffmpeg-{sdk_name}", prefix_for(sdk_name)
+    triple = TRIPLES[sdk_name]
     source = DEPS / f"ffmpeg-source/ffmpeg-{VERSION}"
     for path in (DEPS, build, prefix):
         if path.is_symlink():
@@ -60,9 +69,9 @@ def build_libraries(source_archive, jobs):
         (stage / source.name).rename(source)
         stage.rmdir()
     build.mkdir(parents=True, exist_ok=True)
-    sdk = subprocess.check_output(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], text=True).strip()
+    sdk = subprocess.check_output(["xcrun", "--sdk", sdk_name, "--show-sdk-path"], text=True).strip()
     clang = subprocess.check_output(["xcrun", "--find", "clang"], text=True).strip()
-    flags = f"-target {TRIPLE} -isysroot {sdk}"
+    flags = f"-target {triple} -isysroot {sdk}"
     configure = [str(source / "configure"), f"--prefix={prefix}", "--enable-cross-compile",
         "--arch=aarch64", "--target-os=darwin", f"--cc={clang}", f"--ld={clang}",
         "--ar=ar", "--ranlib=ranlib", f"--sysroot={sdk}",
@@ -74,7 +83,7 @@ def build_libraries(source_archive, jobs):
         "--enable-avcodec", "--enable-avutil", "--enable-decoder=wmav2,wmapro",
         "--disable-videotoolbox", "--disable-audiotoolbox", "--disable-securetransport",
         "--disable-gpl", "--disable-nonfree"]
-    key = {"source_archive_sha256": SOURCE_SHA256, "platform": "iphoneos", "triple": TRIPLE,
+    key = {"source_archive_sha256": SOURCE_SHA256, "platform": sdk_name, "triple": triple,
            "sdk": sdk, "configure": configure}
     state = build / "configuration.json"
     if state.exists() and json.loads(state.read_text()) != key:
@@ -104,16 +113,18 @@ def main():
     parser.add_argument("--source-archive", type=Path,
                         help=f"an existing local ffmpeg-{VERSION}.tar.xz (read in place, never modified)")
     parser.add_argument("--jobs", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--sdk", choices=sorted(TRIPLES), default="iphoneos", help="device SDK (default: iphoneos)")
     args = parser.parse_args()
+    prefix = prefix_for(args.sdk)
     try:
-        manifest = verified_manifest()
+        manifest = verified_manifest(prefix, args.sdk)
         built = manifest is None
         if built:
-            manifest = build_libraries(args.source_archive, args.jobs)
+            manifest = build_libraries(args.source_archive, args.jobs, args.sdk)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         raise SystemExit(f"FFmpeg preparation failed: {error}\nOfficial source: {URL}\n"
                          f"Pinned SHA-256: {SOURCE_SHA256}\nA verified local copy can be given with --source-archive PATH.")
-    print(json.dumps({"built": built, "platform": "iphoneos", "prefix": str(PREFIX), "archives": manifest["archives"]}))
+    print(json.dumps({"built": built, "platform": args.sdk, "prefix": str(prefix), "archives": manifest["archives"]}))
 
 
 if __name__ == "__main__":

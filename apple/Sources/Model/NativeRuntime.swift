@@ -1,8 +1,11 @@
-#if os(iOS) && SKYRIM_NATIVE_RUNTIME
+#if (os(iOS) || os(visionOS)) && SKYRIM_NATIVE_RUNTIME
 import CoreFoundation
 import Foundation
+#if os(visionOS)
+import UIKit
+#endif
 
-/// The native Skyrim runtime linked into physical iPad builds (ipad/build.py): the original
+/// The native Skyrim runtime linked into physical iPad and Vision Pro builds (ipad/build.py): the original
 /// Windows game's code translated ahead of time to ARM64, run in this process with no JIT.
 enum NativeRuntime {
     static var isLinked: Bool { skyrim_native_runtime_linked() == 1 }
@@ -40,6 +43,24 @@ enum NativeRuntime {
         }
         CFRunLoopWakeUp(main)
     }
+
+    #if os(visionOS)
+    /// Vision Pro: reshapes the app's window to the game's 16:9 (or back to the launcher's shape)
+    /// and waits briefly for it to land, since SDL sizes the game from the window scene at start.
+    @MainActor
+    static func shapeWindow(forGame game: Bool) async {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.session.role == .windowApplication })
+        else { return }
+        let size = game ? CGSize(width: 1280, height: 720) : CGSize(width: 900, height: 840)
+        scene.requestGeometryUpdate(.Vision(size: size, resizingRestrictions: game ? .uniform : .freeform))
+        for _ in 0..<20 {
+            let bounds = scene.coordinateSpace.bounds
+            if bounds.height > 0, abs(bounds.width / bounds.height - size.width / size.height) < 0.01 { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+    #endif
 
     /// Holds the game's frames and hides its window, showing the launcher, until resumed.
     static func setPaused(_ paused: Bool) { skyrim_native_set_paused(paused ? 1 : 0) }

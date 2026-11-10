@@ -128,14 +128,28 @@ targets:
         SDKROOT: xros
         SUPPORTED_PLATFORMS: "xros xrsimulator"
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
+        # Vision Pro device and Simulator builds made by ipad/build.py --platform visionos[-simulator] link the native
+        # Skyrim runtime and pass these two; every other build stays the launcher only.
+        SKYRIM_NATIVE_LDFLAGS: ""
+        SKYRIM_NATIVE_SWIFT_CONDITIONS: ""
+        "OTHER_LDFLAGS[sdk=xros*]": "$(inherited) $(SKYRIM_NATIVE_LDFLAGS)"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=xros*]": "$(inherited) $(SKYRIM_NATIVE_SWIFT_CONDITIONS)"
+        "OTHER_LDFLAGS[sdk=xrsimulator*]": "$(inherited) $(SKYRIM_NATIVE_LDFLAGS)"
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=xrsimulator*]": "$(inherited) $(SKYRIM_NATIVE_SWIFT_CONDITIONS)"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Native/SkyrimNativeBridge.h
     info:
       path: Info-visionOS.plist
       properties:
         UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
+          # Multiple scenes for the planned ImmersiveSpace; the launcher window stays the default scene and
+          # SDL's game window is bound to it explicitly (GameSceneReporter).
+          UIApplicationSupportsMultipleScenes: true
+          UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
+        NSWorldSensingUsageDescription: Tracks your head so the immersive screen stays in place around you.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UIApplicationSupportsIndirectInputEvents: true
+        GCSupportsGameMode: true
   # Pure policy, sync-engine and save-format checks; no app host, account or device needed.
   SkyrimLauncherTests:
     type: bundle.unit-test
