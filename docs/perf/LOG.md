@@ -208,3 +208,23 @@ Running total: baseline 11.47 → 8.94 ms idle (**−22%**).
   which matches `sample` on the same build (8%, 8%, 3%). Idle work with it running: 8.71 ms, no different from
   without.
 - **Verdict:** keep; it is on by default like the old one (`noprof.txt` turns it off).
+
+## 2026-11-10 — toolchain: guest atomics at unaligned addresses, and a triage of difftest's standing differences
+
+- **Unaligned atomics.** x86 allows `xchg` with memory and `lock`-prefixed instructions at any address; ARM's
+  atomic instructions raise SIGBUS on Apple CPUs when the address isn't a multiple of the operand size, which
+  would kill the game. difftest hit exactly that (`xchg dword ptr [ecx + 0xe], ecx`, a shape harvested from the
+  game). The lifter now emits `GA_XCHG`, `GA_LOAD`, `GA_CAS` and `GA_FETCH_*` (`runtime/lift_prelude.h`): the
+  same atomic builtin when aligned, the operation under one process-wide lock when not. difftest: that case now
+  matches the reference, nothing else changes. Needs a regen.
+- **The other 43 mnemonics that differ from unicorn on this Mac, by cause:**
+  - *Flags x86 leaves undefined* (not bugs): `imul`/`mul` (ZF, SF, PF), `shr`/`shrd`/`rcl`/`rcr` with a count
+    other than 1 (OF), `bsr` (PF). 44 cases.
+  - *The test, not the lifter:* x87 instructions that pop (the epilogue then reads an empty register; 50-odd
+    cases), `xchg`/`sbb`/`xlatb` snippets that move the stack pointer or address outside the scratch area,
+    `push es`/`push cs`, privileged instructions (`clts`, `lgdt`, `wbinvd`).
+  - *A real difference, left alone:* the sign of a generated NaN. `sqrtss`/`sqrtps`/`rsqrt*` of a negative
+    number give x86's negative quiet NaN (0xFFC00000) in unicorn and ARM's positive one (0x7FC00000) here; the
+    same holds for any operation that makes a NaN. Code that looks only at "is NaN" is unaffected.
+  - *Unimplemented:* `paddusw` on an xmm register traps; the game has one such site.
+- No integer-result differences, so nothing here suggests a lifter bug affecting the game.

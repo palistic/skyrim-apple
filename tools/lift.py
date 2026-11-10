@@ -390,7 +390,7 @@ class Lifter:
         if mn == "xchg" and any(op.type == x86.X86_OP_MEM for op in ops):
             m, r = (ops[0], ops[1]) if ops[0].type == x86.X86_OP_MEM else (ops[1], ops[0])
             T = UT[m.size]
-            e("{ %s o_ = __atomic_exchange_n((%s *)(MEM + %s), (%s)%s, __ATOMIC_SEQ_CST); %s }" % (
+            e("{ %s o_ = GA_XCHG((%s *)(MEM + %s), (%s)%s); %s }" % (
                 T, T, self.addr(i, m), T, self.get(i, r), self.set(i, r, "o_")))
             return o
         if locked and mn in ("bts", "btr", "btc") and ops[0].type == x86.X86_OP_MEM:
@@ -400,9 +400,9 @@ class Lifter:
                 w, bb = "(%s + (uint32_t)(((int32_t)%s >> 5) * 4))" % (a, r), "(%s & 31)" % r
             else:
                 w, bb = "(%s)" % a, "%d" % (ops[1].imm & 31)
-            fn = {"bts": "__atomic_fetch_or", "btr": "__atomic_fetch_and", "btc": "__atomic_fetch_xor"}[mn]
+            fn = {"bts": "GA_FETCH_OR", "btr": "GA_FETCH_AND", "btc": "GA_FETCH_XOR"}[mn]
             mask = ("~(1u << %s)" if mn == "btr" else "(1u << %s)") % bb
-            e("{ uint32_t w_ = %s; uint32_t o_ = %s((uint32_t *)(MEM + w_), %s, __ATOMIC_SEQ_CST); "
+            e("{ uint32_t w_ = %s; uint32_t o_ = %s((uint32_t *)(MEM + w_), %s); "
               "f.cf = (o_ >> %s) & 1; }" % (w, fn, mask, bb))
             return o
         if locked and not getattr(self, "_lk", False) and ops and ops[0].type == x86.X86_OP_MEM and \
@@ -415,9 +415,8 @@ class Lifter:
             finally:
                 self._lk = False
             e("{ uint32_t la_ = %s; %s old_, new_; Flags f0_ = f; do { f = f0_; "
-              "old_ = __atomic_load_n((%s *)(MEM + la_), __ATOMIC_SEQ_CST); new_ = old_; %s } "
-              "while (!__atomic_compare_exchange_n((%s *)(MEM + la_), &old_, new_, 0, __ATOMIC_SEQ_CST, "
-              "__ATOMIC_SEQ_CST)); }" % (la, T, T, " ".join(body), T))
+              "old_ = GA_LOAD((%s *)(MEM + la_)); new_ = old_; %s } "
+              "while (!GA_CAS((%s *)(MEM + la_), &old_, new_)); }" % (la, T, T, " ".join(body), T))
             return o
 
         # x87 is decoded from raw opcode bytes (capstone's register forms are ambiguous)
@@ -553,8 +552,8 @@ class Lifter:
             src = self.get(i, ops[1])
             if ops[0].type == x86.X86_OP_MEM:
                 # atomic on the host too (Skyrim's spinlocks / lock-free lists)
-                e("{ %s exp_ = (%s)%s; __atomic_compare_exchange_n((%s *)(MEM + %s), &exp_, (%s)%s, 0, "
-                  "__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); (void)sub%d((%s)%s, exp_, &f); if (!f.zf) { %s } }" % (
+                e("{ %s exp_ = (%s)%s; GA_CAS((%s *)(MEM + %s), &exp_, (%s)%s); "
+                  "(void)sub%d((%s)%s, exp_, &f); if (!f.zf) { %s } }" % (
                       T, T, self.reg_get(acc), T, self.addr(i, ops[0]), T, src, n, T, self.reg_get(acc),
                       self.reg_set(acc, "exp_")))
             else:
@@ -565,15 +564,14 @@ class Lifter:
             n, T = BITS[ops[0].size], UT[ops[0].size]
             s = self.get(i, ops[1])
             if ops[0].type == x86.X86_OP_MEM:
-                e("{ %s s_ = %s; %s o_ = __atomic_fetch_add((%s *)(MEM + %s), s_, __ATOMIC_SEQ_CST); "
+                e("{ %s s_ = %s; %s o_ = GA_FETCH_ADD((%s *)(MEM + %s), s_); "
                   "(void)add%d(o_, s_, &f); %s }" % (T, s, T, T, self.addr(i, ops[0]), n, self.set(i, ops[1], "o_")))
             else:
                 e("{ %s d_ = %s, s_ = %s; %s r_ = add%d(d_, s_, &f); %s %s }" % (
                     T, self.get(i, ops[0]), s, T, n, self.set(i, ops[1], "d_"), self.set(i, ops[0], "r_")))
         elif mn == "cmpxchg8b":
             e("{ uint64_t exp_ = ((uint64_t)edx << 32) | eax, des_ = ((uint64_t)ecx << 32) | ebx; "
-              "if (__atomic_compare_exchange_n((uint64_t *)(MEM + %s), &exp_, des_, 0, __ATOMIC_SEQ_CST, "
-              "__ATOMIC_SEQ_CST)) f.zf = 1; else { f.zf = 0; eax = (uint32_t)exp_; edx = (uint32_t)(exp_ >> 32); } }"
+              "if (GA_CAS((uint64_t *)(MEM + %s), &exp_, des_)) f.zf = 1; else { f.zf = 0; eax = (uint32_t)exp_; edx = (uint32_t)(exp_ >> 32); } }"
               % self.addr(i, ops[0]))
         elif mn == "pslldq":
             x = self.xmm(i, ops[0])
