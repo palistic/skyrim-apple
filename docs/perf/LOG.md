@@ -228,3 +228,22 @@ Running total: baseline 11.47 → 8.94 ms idle (**−22%**).
     same holds for any operation that makes a NaN. Code that looks only at "is NaN" is unaffected.
   - *Unimplemented:* `paddusw` on an xmm register traps; the game has one such site.
 - No integer-result differences, so nothing here suggests a lifter bug affecting the game.
+
+## 2026-11-10 — first headset A/B (M2 Vision Pro, visionOS 27.3, windowed 1280×720)
+
+- **Scenario** `whiterun-market-avp` with `LB_MAX_FPS=120`, so the frame time shows the game's cost rather than
+  the 60 fps cap (the previously installed build logs no work column): `coc whiterunorigin`, stand at the gate
+  (*idle*, frames 6000–7200), run up the street (*run*). Calibration first: main menu steady at 60 fps,
+  thermal state nominal.
+- **Builds:** A = the app installed on 2026-11-09 (binary 17339b74…); B = the same launcher with the engine
+  from this branch at commit 0b5b053 (binary 11835a06…, engine e4849f52…: x87 cache, constant guest base,
+  native `0x472580`, lock-free COM lookup). Thomas approved the install and wore the headset.
+- **Idle, mean frame ms (fps):** A 12.7 (78), 11.7 (85); B 9.0 (111), 9.0 (111). **About −26%**, two runs a
+  side, each B run below each A run by more than the A runs differ from each other.
+- **Run phase:** A 9.7, 9.4 ms; B 8.4, 8.4 ms, which is the 120 fps cap, so the gain there is clipped; B's own
+  work time is 6.1–6.2 ms.
+- `Present` stays at 0.0–0.1 ms in every pacing line, so in the window at this resolution the headset is
+  limited by the game's CPU, as on the M1. All four runs exited cleanly at the exit frame.
+- **Not yet known:** the immersive screen's cost (compositor at 90 Hz plus the tap), busier or combat scenes,
+  and long-session thermals. The depth build (`depth-v2`, binary 2569a7db…) was installed at the end of the
+  session for the "Skyrim - M1" session's immersive test.
