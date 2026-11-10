@@ -280,3 +280,19 @@ Three sessions of `depth-v2` in the immersive space, logs in `bench-results/avp-
   build. It also says something about the call-overhead idea in general: the compiler's own cross-file inlining
   buys little here, so a lifter-side register analysis would have to do much better than inlining to be worth
   its risk.
+
+## 2026-11-10 — second immersive session on the headset (`depth-v5`, about 7 minutes of hand play)
+
+Log in `bench-results/avp-immersive-20261110T1458/`. Build: app 8b3bd810…, engine f3c22183… (this branch's engine work including the
+unaligned-atomics fix, plus the "Skyrim - M1" session's two-frame mailbox, five tap slots, depth scale 0.25 with
+tear handling, and flat menus).
+
+- **The handoff fix works.** Of 77 ten-second reports, 49 show 60 game frames per second reaching the display
+  and another 20 show 53–59; the rest are loading. The game's own pacing lines have the same shape (64 of 80 at
+  60 fps), so the display now follows the game. In the first session it sat near 47 whatever the game did.
+- The compositor presented at 90 Hz in 76 of 77 reports (84 in the other).
+- **Menus:** 18 changes logged. Flat with 3 open/1 pausing, 4 open/1 pausing, 5 open/2 pausing, and with 2 or
+  3 open and none pausing (non-pausing menus, as the rule intended); depth with only the HUD open.
+- **CPU:** the process used 43–70% of one core, the main thread 21–28%. Thermal state stayed nominal.
+- **Thomas's verdict:** "Much better." His screenshots show clean edges on a rock and the sword at the
+  reduced depth, and a flat main menu.
