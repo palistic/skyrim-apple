@@ -43,5 +43,13 @@ game turns a frame or two after the head) is hidden by step 3. The hook stays th
       ±34° yaw / ±14° pitch sweep: yaw error mean 2.3°, max 3.6°; pitch mean 0.6°, max 1.7°. Off in menus;
       the real right stick takes over and re-anchors. The mouse path (no pad) is written but unverified: the
       bench always has its virtual pad.
-- [ ] Compositor "view" mode: frame at its rendered pose, true FOV, true-scale depth.
+- [x] Compositor head-tracking mode (`LB_IMMERSIVE_HEAD=1`): publishes the head's yaw/pitch to the runtime each
+      display frame (relative to its starting heading); draws each frame on a plane facing back along its game
+      camera's direction (heading minus the steering offset), sized to the frame's own frustum, with each pixel
+      at its true view distance (`LB_IMMERSIVE_HEAD_SCALE`, 1 = true scale, capped at 300 m). Builds; untested.
+- [x] Wider game FOV: `LB_FOV=<deg>` writes PlayerCamera worldFOV/firstPersonFOV at Present (the INI keys had
+      no effect). Mac: `LB_FOV=100` gives frustum ±1.589 x ±0.894, i.e. 115° x 83°.
+
+Headset test settings (Documents/SkyrimNative/launch-env.json): `LB_IMMERSIVE_HEAD=1`, `LB_FOV=100`, and
+`LB_ANY_PAD=1` for the Xbox controller. Then Play Immersive.
 - [ ] Headset: comfort, latency, frame rate.

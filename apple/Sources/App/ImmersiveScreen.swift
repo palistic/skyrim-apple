@@ -43,6 +43,9 @@ private struct QuadUniforms {
     /// A triangle whose far corner is more than (1 + tear) times as far from the eye as its near one is dropped
     /// rather than stretched.
     var tear: Float
+    /// 0: the screen is a window (depth behind it, scaled). 1: head-tracked view, each pixel at its true distance
+    /// (depthScale meters per game meter, up to maxBehind meters) from the eye, which is eyeBack in front.
+    var trueDepth: Float
 }
 
 /// Runs on its own thread for as long as the layer lives: presents at the display's rate, showing the newest finished
@@ -54,7 +57,7 @@ final class ImmersiveCompositor: @unchecked Sendable {
     struct Uniforms {
         float4x4 viewProjection; float4x4 model; float2 halfSize; uint decode; uint hasDepth;
         uint2 grid; float eyeBack; float nearUnits; float unitsPerMeter; float depthScale; float maxBehind; float backplate;
-        float tear;
+        float tear; float trueDepth;
     };
     struct Out { float4 position [[position]]; float2 uv; };
     // A grid over the game image. With depth, each vertex moves along the ray from the game's camera (eyeBack in
@@ -65,7 +68,8 @@ final class ImmersiveCompositor: @unchecked Sendable {
     // How far behind the screen (meters, along the viewer's ray) the game pixel at uv sits. The screen is a window:
     // everything is behind it, at depthScale meters per game meter, up to maxBehind. A consistent geometry (unlike a
     // relief pushed out of the screen), so the eyes converge where the picture is.
-    float behind_screen(float2 uv, constant Uniforms &u, texture2d<float> depth) {
+    // The game pixel's view depth in game meters.
+    float behind_screen_raw(float2 uv, constant Uniforms &u, texture2d<float> depth) {
         constexpr sampler nearest(address::clamp_to_edge, filter::nearest);
         // The nearest depth around the point (half a grid cell each way), so a thin foreground edge keeps its depth
         // instead of a vertex landing beside it in the background.
@@ -76,8 +80,16 @@ final class ImmersiveCompositor: @unchecked Sendable {
         d = min(d, depth.sample(nearest, uv + float2(0, -cell.y), level(0)).r);
         d = min(d, depth.sample(nearest, uv + float2(0, cell.y), level(0)).r);
         // D3D depth with a far plane much farther than the near one: view distance ~ near / (1 - d).
-        float meters = (u.nearUnits / max(1.0 - d, 1e-6)) / u.unitsPerMeter;
-        return min(u.depthScale * meters, u.maxBehind);
+        return (u.nearUnits / max(1.0 - d, 1e-6)) / u.unitsPerMeter;
+    }
+    float behind_screen(float2 uv, constant Uniforms &u, texture2d<float> depth) {
+        return min(u.depthScale * behind_screen_raw(uv, u, depth), u.maxBehind);
+    }
+    // Distance from the eye of the game pixel at uv. Window mode: the screen distance plus how far behind it.
+    // True-depth mode: its view depth in meters, along the ray (view depth z sits at z / cos = |ray| * z / eyeBack).
+    float radial(float2 uv, float toScreen, constant Uniforms &u, texture2d<float> depth) {
+        if (u.trueDepth == 0) return toScreen + behind_screen(uv, u, depth);
+        return toScreen * min(behind_screen_raw(uv, u, depth) * u.depthScale, u.maxBehind) / u.eyeBack;
     }
     float3 screen_point(float2 uv, constant Uniforms &u) {
         return float3((uv.x * 2 - 1) * u.halfSize.x, (1 - uv.y * 2) * u.halfSize.y, 0);
@@ -107,21 +119,23 @@ final class ImmersiveCompositor: @unchecked Sendable {
         float3 ray = onScreen - eye;
         float toScreen = length(ray);
         if (u.backplate != 0) {
-            p = eye + ray * (1.0 + u.maxBehind * edge_fade(uv) / toScreen);
+            float far = u.trueDepth != 0 ? toScreen * u.maxBehind / u.eyeBack - toScreen : u.maxBehind * edge_fade(uv);
+            p = eye + ray * (1.0 + far / toScreen);
         } else if (u.hasDepth) {
             // Distances from the eye of the triangle's corners; a triangle whose far corner is more than (1 + tear)
             // times as far as its near one spans an object's edge.
             float2 c0 = float2(cell + corners[first]) * step, c1 = float2(cell + corners[first + 1]) * step,
                    c2 = float2(cell + corners[first + 2]) * step;
-            float r0 = length(screen_point(c0, u) - eye) + behind_screen(c0, u, depth);
-            float r1 = length(screen_point(c1, u) - eye) + behind_screen(c1, u, depth);
-            float r2 = length(screen_point(c2, u) - eye) + behind_screen(c2, u, depth);
+            float r0 = radial(c0, length(screen_point(c0, u) - eye), u, depth);
+            float r1 = radial(c1, length(screen_point(c1, u) - eye), u, depth);
+            float r2 = radial(c2, length(screen_point(c2, u) - eye), u, depth);
             if (max(r0, max(r1, r2)) > min(r0, min(r1, r2)) * (1.0 + u.tear)) {
                 out.position = float4(0, 0, 0, 1);  // same point for all three corners: no area, nothing drawn
                 return out;
             }
             float r = corner == first ? r0 : (corner == first + 1 ? r1 : r2);
-            p = eye + ray * (1.0 + (r - toScreen) * edge_fade(uv) / toScreen);
+            float fade = u.trueDepth != 0 ? 1.0 : edge_fade(uv);
+            p = eye + ray * (1.0 + (r - toScreen) * fade / toScreen);
         }
         out.position = u.viewProjection * u.model * float4(p, 1);
         return out;
@@ -154,6 +168,13 @@ final class ImmersiveCompositor: @unchecked Sendable {
     private static let gridColumns: UInt32 = 321, gridRows: UInt32 = 181
     private var depthSettings: (scale: Float, maxBehind: Float, near: Float, units: Float, tear: Float, on: Bool)?
     private var loggedDepth = false
+    /// Head tracking (LB_IMMERSIVE_HEAD=1, docs/HEAD_TRACKING.md): the head steers the game camera and each frame
+    /// is drawn where its camera pointed, at true depth. The head's starting heading and position.
+    private lazy var headMode: Bool = getenv("LB_IMMERSIVE_HEAD").map { String(cString: $0) == "1" } ?? false
+    private var headStartYaw: Float?
+    private var headStartPosition = SIMD3<Float>(0, 0, 0)
+    /// Distance of the plane the frame's grid is laid on before depth moves it (any value works in true depth).
+    private static let viewPlane: Float = 2.0
 
     init(layer: LayerRenderer) {
         self.layer = layer
@@ -230,7 +251,11 @@ final class ImmersiveCompositor: @unchecked Sendable {
         }
     }
 
+    /// Meters in the headset per game meter in head-tracking mode (LB_IMMERSIVE_HEAD_SCALE; 1 = true scale).
+    private lazy var headDepthScale: Float = getenv("LB_IMMERSIVE_HEAD_SCALE").flatMap { Float(String(cString: $0)) } ?? 1.0
+
     private func finish() {
+        if headMode { skyrim_head_set(0, 0, 0) }
         lastCommands?.waitUntilCompleted()
         skyrim_immersive_stop()
         session.stop()
@@ -248,6 +273,37 @@ final class ImmersiveCompositor: @unchecked Sendable {
         screen = placed
         log("screen placed \(Self.distance) m ahead")
         return placed
+    }
+
+    /// The head's heading (clockwise from its starting one) and pitch, in radians.
+    private func headAngles(_ head: simd_float4x4) -> (yaw: Float, pitch: Float) {
+        let forward = -SIMD3<Float>(head.columns.2.x, head.columns.2.y, head.columns.2.z)
+        let yaw = atan2(forward.x, -forward.z)
+        if headStartYaw == nil {
+            headStartYaw = yaw
+            headStartPosition = SIMD3<Float>(head.columns.3.x, head.columns.3.y, head.columns.3.z)
+            log("head tracking: anchored")
+        }
+        var relative = yaw - headStartYaw!
+        relative -= 2 * .pi * (relative / (2 * .pi)).rounded()
+        return (relative, asin(max(-1, min(1, forward.y))))
+    }
+
+    /// Where a frame goes in head-tracking mode: a plane facing back along the direction its game camera looked,
+    /// viewPlane meters from the starting head position, so the eye sits eyeBack = viewPlane in front of it.
+    private func framePose(camera c: [Float]) -> simd_float4x4? {
+        var valid: Int32 = 0
+        let offset = skyrim_head_offset(&valid)
+        guard valid != 0, let startYaw = headStartYaw else { return nil }
+        // Game camera forward is the rotation's first column; Skyrim heading is clockwise from +Y (north).
+        let gameYaw = atan2(c[0], c[3]), gamePitch = asin(max(-1, min(1, c[6])))
+        let yaw = startYaw + (gameYaw - offset)
+        let forward = SIMD3<Float>(sin(yaw) * cos(gamePitch), sin(gamePitch), -cos(yaw) * cos(gamePitch))
+        let back = -forward
+        let right = normalize(cross(SIMD3<Float>(0, 1, 0), back))
+        let up = cross(back, right)
+        let center = headStartPosition + forward * Self.viewPlane
+        return simd_float4x4(SIMD4<Float>(right, 0), SIMD4<Float>(up, 0), SIMD4<Float>(back, 0), SIMD4<Float>(center, 1))
     }
 
     private func draw() {
@@ -297,13 +353,27 @@ final class ImmersiveCompositor: @unchecked Sendable {
             log("game texture \(texture.width)x\(texture.height), same Metal device as the layer: \(texture.device === device)")
         }
 
+        var publishedHead = false
         for drawable in drawables {
             let shownAt = LayerRenderer.Clock.Instant.epoch.duration(to: drawable.frameTiming.presentationTime)
             let seconds = Double(shownAt.components.seconds) + Double(shownAt.components.attoseconds) * 1e-18
             let anchor = tracking.queryDeviceAnchor(atTimestamp: seconds)
             drawable.deviceAnchor = anchor
             let head = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
-            let model = anchor != nil ? place(head: head) : screen
+            var model = anchor != nil ? place(head: head) : screen
+            var halfSize: SIMD2<Float>? = nil
+            if headMode, anchor != nil {
+                let angles = headAngles(head)
+                if !publishedHead { skyrim_head_set(angles.yaw, angles.pitch, 1); publishedHead = true }
+                if game.has_camera != 0 {
+                    let c = withUnsafeBytes(of: game.camera) { Array($0.bindMemory(to: Float.self)) }
+                    if let pose = framePose(camera: c) {
+                        model = pose
+                        // Frustum tangents right and top: the frame covers exactly the angles it was rendered for.
+                        halfSize = SIMD2(Self.viewPlane * c[13], Self.viewPlane * c[14])
+                    }
+                }
+            }
             for (index, view) in drawable.views.enumerated() {
                 let pass = MTLRenderPassDescriptor()
                 pass.colorAttachments[0].texture = drawable.colorTextures[view.textureMap.textureIndex]
@@ -325,16 +395,18 @@ final class ImmersiveCompositor: @unchecked Sendable {
                     // sit: a point moved along a ray from the viewer's own eye looks unchanged from there, so the
                     // picture stays undistorted and depth only shows as parallax between the eyes and with head
                     // movement. From a ray origin closer than the viewer (1.8 m) it bent the screen into a box.
-                    let eyeBack = Self.distance
+                    let tracked = halfSize != nil
+                    let eyeBack = tracked ? Self.viewPlane : Self.distance
                     var uniforms = QuadUniforms(viewProjection: drawable.computeProjection(convention: .rightUpBack, viewIndex: index) * viewMatrix,
                                                 model: model,
-                                                halfSize: SIMD2(Self.width / 2, Self.width / 2 / aspect),
+                                                halfSize: halfSize ?? SIMD2(Self.width / 2, Self.width / 2 / aspect),
                                                 decode: game.needs_srgb_decode != 0 ? 1 : 0,
                                                 hasDepth: useDepth ? 1 : 0,
                                                 grid: SIMD2(Self.gridColumns, Self.gridRows),
                                                 eyeBack: eyeBack, nearUnits: settings.near, unitsPerMeter: settings.units,
-                                                depthScale: settings.scale, maxBehind: settings.maxBehind, backplate: 0,
-                                                tear: settings.tear)
+                                                depthScale: tracked ? headDepthScale : settings.scale,
+                                                maxBehind: tracked ? 300 : settings.maxBehind, backplate: 0,
+                                                tear: settings.tear, trueDepth: tracked && useDepth ? 1 : 0)
                     encoder.setRenderPipelineState(pipeline)
                     encoder.setDepthStencilState(depth)
                     encoder.setCullMode(.none)

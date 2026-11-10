@@ -638,6 +638,18 @@ extern "C" int skyrim_frame_camera(float out[18]) {
     return 1;
 }
 
+/* LB_FOV: the game's field of view in degrees at its 4:3 reference (65 by default, about 81 degrees across at
+ * 16:9), written to PlayerCamera worldFOV (+0xAC) and firstPersonFOV (+0xB0) as the console's fov command
+ * does. Head tracking wants it wider than the headset shows. */
+static void game_fov_apply(void) {
+    static float fov = -1;
+    if (fov < 0) fov = getenv("LB_FOV") ? (float)atof(getenv("LB_FOV")) : 0;
+    uint32_t pc = M32(0x12E7288);
+    if (fov <= 0 || pc < 0x10000) return;
+    memcpy(MEM + pc + 0xAC, &fov, 4);
+    memcpy(MEM + pc + 0xB0, &fov, 4);
+}
+
 /* LB_CAMLOG=N: log the world camera every N frames (to check the layout above). */
 static void camera_log(void) {
     static int every = -1;
@@ -676,6 +688,7 @@ void B_IDirect3DDevice9_Present(CPU *c) {
     // The immersive compositor gets this frame's scene depth with its colour (DXVK present tap). The target is
     // only known to be alive within this frame, so it's named for this Present and forgotten after it.
     g_frame_camera_valid = game_camera_read(&g_frame_camera);
+    game_fov_apply();
     skyrim_present_tap_set_depth(menu_open() ? nullptr : d3d_scene_depth_target());
 #endif
     platform_present_begin();

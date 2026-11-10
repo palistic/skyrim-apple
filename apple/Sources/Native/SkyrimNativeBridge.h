@@ -38,6 +38,11 @@ void skyrim_immersive_start(void);
 void skyrim_immersive_stop(void);
 int skyrim_immersive_acquire(skyrim_immersive_frame *out);
 void skyrim_immersive_release(void *state, uint32_t slot);
+/* runtime/platform_sdl.c head steering: the head's yaw (clockwise) and pitch (up) in radians relative to its
+ * starting direction, from the compositor thread; on = 0 stops steering. */
+void skyrim_head_set(float yaw, float pitch, int on);
+/* The game heading (radians, clockwise from north) that head yaw 0 maps to; *valid = 0 until steering anchors. */
+float skyrim_head_offset(int *valid);
 #endif
 
 #endif

@@ -113,6 +113,10 @@ void skyrim_head_set(float yaw, float pitch, int on) {
     atomic_store(&g_head_on, on);
 }
 static int g_head_external;  /* frames left during which real mouse motion owns the view */
+static _Atomic float g_head_offset;  /* game heading minus head yaw: where the head's straight-ahead points */
+static atomic_int g_head_anchored;
+/* For the compositor: the game heading (radians) that the head's yaw 0 maps to, or 0 with *valid = 0. */
+float skyrim_head_offset(int *valid) { *valid = atomic_load(&g_head_anchored); return atomic_load(&g_head_offset); }
 static void head_note_event(const SDL_Event *e) {
     if (e->type == SDL_MOUSEMOTION && e->motion.which != SDL_TOUCH_MOUSEID
         && (e->motion.xrel || e->motion.yrel))
@@ -139,16 +143,18 @@ static void head_steer(void) {
     if (test == 1) { head_yaw = test_yaw * 0.017453293f; head_pitch = test_pitch * 0.017453293f; }
     else if (test == 2) { float t = frame / 60.0f; head_yaw = 0.6f * sinf(t * 0.8f); head_pitch = 0.25f * sinf(t * 0.5f); }
     else if (atomic_load(&g_head_on)) { head_yaw = atomic_load(&g_head_yaw); head_pitch = atomic_load(&g_head_pitch); }
-    else { if (anchored) { void input_head_stick(float, float); input_head_stick(0, 0); } anchored = 0; return; }
+    else { if (anchored) { void input_head_stick(float, float); input_head_stick(0, 0); } anchored = 0; atomic_store(&g_head_anchored, 0); return; }
     float cam[18];
     if (!g_window || !skyrim_frame_camera(cam)) return;
     void input_head_stick(float x, float y);
-    if (skyrim_menu_open()) { anchored = 0; input_head_stick(0, 0); return; }  /* menus get no synthetic mouse; re-anchor after */
+    if (skyrim_menu_open()) { anchored = 0; atomic_store(&g_head_anchored, 0); input_head_stick(0, 0); return; }  /* menus get no synthetic mouse; re-anchor after */
     /* Columns of the camera rotation: forward (cam[0], cam[3], cam[6]); Skyrim heading is clockwise from +Y. */
     float game_yaw = atan2f(cam[0], cam[3]);
     float game_pitch = asinf(fmaxf(-1.0f, fminf(1.0f, cam[6])));
     if (!anchored || g_head_external > 0) {
         offset = head_wrap(game_yaw - head_yaw);
+        atomic_store(&g_head_offset, offset);
+        atomic_store(&g_head_anchored, 1);
         anchored = 1;
         carry_x = carry_y = 0;
         if (g_head_external > 0) g_head_external--;
