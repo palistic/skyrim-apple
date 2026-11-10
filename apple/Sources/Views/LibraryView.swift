@@ -8,6 +8,9 @@ struct LibraryView: View {
     @State private var showSettings = false
     @State private var picker: PickerRequest?
     @State private var confirmQuit = false
+    #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    #endif
 
     enum PickerRequest { case folder, artwork }
 
@@ -238,6 +241,25 @@ struct LibraryView: View {
                 .foregroundStyle(accent.opacity(0.88))
             }
             primaryButton(compact: compact)
+            #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+            if model.primaryAction == .play && model.canPlay {
+                Button {
+                    Task {
+                        if case .opened = await openImmersiveSpace(id: ImmersiveScreen.spaceID) { model.play() }
+                    }
+                } label: {
+                    Label("Play Immersive", systemImage: "visionpro")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                }
+                .buttonStyle(.bordered)
+                .task {
+                    guard LauncherModel.benchImmersive, !LauncherModel.benchImmersiveStarted else { return }
+                    LauncherModel.benchImmersiveStarted = true
+                    if case .opened = await openImmersiveSpace(id: ImmersiveScreen.spaceID) { model.play() }
+                }
+            }
+            #endif
             if model.primaryAction == .running {
                 Button { model.pause(reason: "Paused from the launcher") } label: {
                     Label("Pause", systemImage: "pause.fill")

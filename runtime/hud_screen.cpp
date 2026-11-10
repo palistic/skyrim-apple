@@ -366,6 +366,8 @@ void layout(RECT *hud, RECT *fav, RECT *fav_src) {
 // one bound is kept here, not referenced: use it within the frame it was bound in.
 static IDirect3DSurface9 *g_scene_depth;
 IDirect3DSurface9 *d3d_scene_depth_target(void) { return g_scene_depth; }
+// Called after each Present: a frame that never binds the depth target (menus, loading) reports none.
+void d3d_scene_depth_reset(void) { g_scene_depth = nullptr; }
 // LB_D3DTRACE: these calls define the frame's passes, so they say what the surface is, not only its handle.
 extern "C" int platform_frame_count(void);
 static void trace_surface(const char *call, uint32_t index, IDirect3DSurface9 *s) {

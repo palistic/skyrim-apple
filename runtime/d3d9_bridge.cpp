@@ -16,6 +16,7 @@ bool bc_lock(void *tex, uint32_t sub, uint32_t w, uint32_t h, const RECT *r, DWO
              const std::function<HRESULT(D3DLOCKED_RECT *, const RECT *)> &lock, HRESULT *hr);
 bool bc_unlock(void *tex, uint32_t sub);
 bool bc_surface_target(void *surf, void **tex, uint32_t *sub);
+#include <atomic>
 #include <mutex>
 #include <thread>
 #include <chrono>
@@ -29,7 +30,27 @@ struct IfaceInfo { const char *name = nullptr; uint32_t vtbl = 0; };
 IfaceInfo g_ifaces[64];
 std::recursive_mutex g_lock;
 std::unordered_map<void *, uint32_t> g_host_to_guest;
-std::vector<void *> g_objs{nullptr};
+// Guest COM id -> host object. com_host reads it on every D3D9 call (about 5% of the main thread went to its
+// lock), so reads take none: the table grows in chunks that never move and its count only rises. Writers hold
+// g_lock as before.
+struct ObjTable {
+    static constexpr uint32_t kChunk = 4096, kChunks = 4096;
+    std::atomic<std::atomic<void *> *> chunks[kChunks] = {};
+    std::atomic<uint32_t> count{0};
+    ObjTable() { push_back(nullptr); }  // id 0 is never an object
+    uint32_t size() const { return count.load(std::memory_order_acquire); }
+    std::atomic<void *> &operator[](uint32_t id) {
+        return chunks[id / kChunk].load(std::memory_order_acquire)[id % kChunk];
+    }
+    void push_back(void *host) {
+        uint32_t id = count.load(std::memory_order_relaxed);
+        if (id / kChunk >= kChunks) rt_fatal("out of guest COM object ids");
+        if (!chunks[id / kChunk].load(std::memory_order_relaxed))
+            chunks[id / kChunk].store(new std::atomic<void *>[kChunk](), std::memory_order_release);
+        (*this)[id].store(host, std::memory_order_release);
+        count.store(id + 1, std::memory_order_release);  // the entry is visible before the count covers it
+    }
+} g_objs;
 std::vector<uint32_t> g_free_ids;
 }
 
@@ -47,9 +68,8 @@ void com_register_iface(int iface, const char *name, const ShimFn *fns, int n) {
 void *com_host(uint32_t g) {
     if (!g) return nullptr;
     uint32_t id = M32(g + 4);
-    std::lock_guard<std::recursive_mutex> l(g_lock);
     if (id >= g_objs.size()) rt_fatal("bad guest COM object %08x", g);
-    return g_objs[id];
+    return g_objs[id].load(std::memory_order_acquire);
 }
 
 uint32_t com_wrap(void *host, int iface) {
@@ -450,6 +470,62 @@ static void bisect_present(void) {
 // LB_SHOT=F[,F...]: write the backbuffer about to be presented on those
 // frames to <save>/shot-<frame>.bmp. Off unless set; for headless verification
 // where no screen capture permission exists.
+// With LB_SHOT, the scene's depth target of the same frame goes to <save>/depth-<frame>.f32: width and height
+// as two uint32, then rows of float32 exactly as the game wrote them. Input for trying depth-based stereo off
+// the headset (docs/perf/IMMERSIVE_OPTIONS.md).
+IDirect3DSurface9 *d3d_scene_depth_target(void);
+void d3d_scene_depth_reset(void);
+#if defined(__APPLE__)
+extern "C" void skyrim_present_tap_set_depth(void *surface);  // DXVK present tap (skyrim_present_tap.h)
+#endif
+
+#if defined(__APPLE__)
+/* Whether a menu is up (TESV 1.9.32.0.8): the menu manager singleton's menu stack count (+0x9C; 1 is the HUD) and
+ * its count of open menus that pause the game (+0xC8). With a menu up the immersive screen gets no depth and
+ * shows the frame flat, so menus and their text aren't bent by the scene behind them. Changes are logged with
+ * both counts, since only the main menu, console and pause menu were checked. */
+static bool menu_open(void) {
+    uint32_t mm = M32(0x12E3548);
+    if (mm < 0x10000) return false;
+    uint32_t open_menus = M32(mm + 0x9C), pause_menus = M32(mm + 0xC8);
+    bool open = pause_menus != 0 || open_menus > 1;
+    static uint64_t last = ~0ull;
+    uint64_t now = ((uint64_t)open_menus << 32) | pause_menus;
+    if (now != last) {
+        last = now;
+        fprintf(stderr, "menus: %u open, %u pausing -> screen %s\n", open_menus, pause_menus, open ? "flat" : "depth");
+    }
+    return open;
+}
+#endif
+
+static void shot_depth(IDirect3DDevice9 *d) {
+    IDirect3DSurface9 *depth = d3d_scene_depth_target(), *copy = nullptr;
+    D3DSURFACE_DESC desc;
+    D3DLOCKED_RECT locked;
+    if (!depth) { LOG("LB_SHOT frame %d: no scene depth target seen", g_frame); return; }
+    HRESULT hr = depth->GetDesc(&desc);
+    if (SUCCEEDED(hr)) hr = d->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &copy, nullptr);
+    if (SUCCEEDED(hr)) hr = d->GetRenderTargetData(depth, copy);
+    if (SUCCEEDED(hr)) hr = copy->LockRect(&locked, nullptr, D3DLOCK_READONLY);
+    if (SUCCEEDED(hr)) {
+        char path[1100];
+        snprintf(path, sizeof path, "%s/depth-%05d.f32", g_save_dir, g_frame);
+        FILE *out = fopen(path, "wb");
+        if (out) {
+            uint32_t size[2] = {desc.Width, desc.Height};
+            fwrite(size, 4, 2, out);
+            for (uint32_t y = 0; y < desc.Height; y++) fwrite((const uint8_t *)locked.pBits + (size_t)y * locked.Pitch, 4, desc.Width, out);
+            fclose(out);
+        }
+        copy->UnlockRect();
+        LOG("LB_SHOT frame %d depth %ux%u -> %s", g_frame, desc.Width, desc.Height, out ? path : "(open failed)");
+    } else {
+        LOG("LB_SHOT frame %d depth failed: hr %08x", g_frame, (unsigned)hr);
+    }
+    if (copy) copy->Release();
+}
+
 static void shot_before_present(IDirect3DDevice9 *d) {
     static int frames[16], count = -1;
     if (count < 0) {
@@ -464,6 +540,7 @@ static void shot_before_present(IDirect3DDevice9 *d) {
     int wanted = 0;
     for (int i = 0; i < count; i++) wanted |= frames[i] == g_frame;
     if (!wanted) return;
+    shot_depth(d);
     IDirect3DSurface9 *back = nullptr, *copy = nullptr;
     D3DSURFACE_DESC desc;
     D3DLOCKED_RECT locked;
@@ -525,7 +602,11 @@ static void pace_present(void) {
         next_ns = slot + interval_ns;
         wait_ns = slot - now;
     }
-    if (wait_ns > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(wait_ns));
+    if (wait_ns > 0) {
+        const auto before = std::chrono::steady_clock::now();
+        std::this_thread::sleep_for(std::chrono::nanoseconds(wait_ns));
+        platform_present_slept(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - before).count());
+    }
 }
 #else
 static void pace_present(void) {}
@@ -547,7 +628,18 @@ void B_IDirect3DDevice9_Present(CPU *c) {
     shot_before_present(d);
     RECT vr = view_rect();
     const RECT *dst = ARG(2) ? (const RECT *)GPTR(ARG(2)) : (vr.left || vr.top) ? &vr : nullptr;
+#if defined(__APPLE__)
+    // The immersive compositor gets this frame's scene depth with its colour (DXVK present tap). The target is
+    // only known to be alive within this frame, so it's named for this Present and forgotten after it.
+    skyrim_present_tap_set_depth(menu_open() ? nullptr : d3d_scene_depth_target());
+#endif
+    platform_present_begin();
     HRESULT hr = d->Present((const RECT *)GPTR(ARG(1)), dst, nullptr, (const RGNDATA *)GPTR(ARG(4)));
+    platform_present_end();
+#if defined(__APPLE__)
+    skyrim_present_tap_set_depth(nullptr);
+    d3d_scene_depth_reset();
+#endif
     pace_present();
     platform_present_hook();
     bisect_present();
