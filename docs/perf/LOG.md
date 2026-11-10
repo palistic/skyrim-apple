@@ -265,3 +265,18 @@ Three sessions of `depth-v2` in the immersive space, logs in `bench-results/avp-
   thread 22–25%.
 - The new profiler's tables appear in these logs, so it works on the device.
 - Thermal state went from nominal to fair once, about two minutes into the second session.
+
+## 2026-11-10 — ThinLTO for the generated code
+
+- **Hypothesis:** inlining lifted functions across the 140 generated files removes spill/reload pairs at
+  direct calls.
+- **Change (build only):** `-DSKYRIM_GEN_FLAGS=-flto=thin` and `-flto=thin` on the link, in
+  `macos/build/perf-lto`. The generated objects are bitcode; the link finished without memory trouble on the
+  8 GB M1 (2 LTO threads, cache on disk).
+- **Runtime, Whiterun idle work ms, interleaved (first pair dropped: load average 17):** without 9.52, 9.54;
+  with 9.12, 9.48, 9.12 (and 9.33 on its warm-up run). Run phase 7.46, 7.52 against 7.08, 7.40, 7.11.
+  **About −2 to −4%, and not in every run.**
+- **Verdict:** not adopted. The gain is at the edge of the noise and it would complicate every platform's
+  build. It also says something about the call-overhead idea in general: the compiler's own cross-file inlining
+  buys little here, so a lifter-side register analysis would have to do much better than inlining to be worth
+  its risk.
