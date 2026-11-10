@@ -612,6 +612,38 @@ static void pace_present(void) {
 static void pace_present(void) {}
 #endif
 
+/* The game's main world camera as it was last set up (TESV 1.9.32.0.8, docs/VISION_PRO_PLAN.md M3): NiCamera W =
+ * *(*(0x1B2E8BC)+0xB8); world rotation +0x54 (3x3, row-major), translation +0x78, frustum tangents l r t b +0xE8,
+ * near/far +0xF8. Read at Present, i.e. for the frame being shown. */
+struct GameCamera { float rot[9], pos[3], frustum[6]; };
+static bool game_camera_read(GameCamera *out) {
+    uint32_t root = M32(0x1B2E8BC);
+    if (root < 0x10000) return false;
+    uint32_t w = M32(root + 0xB8);
+    if (w < 0x10000) return false;
+    memcpy(out->rot, MEM + w + 0x54, sizeof out->rot);
+    memcpy(out->pos, MEM + w + 0x78, sizeof out->pos);
+    memcpy(out->frustum, MEM + w + 0xE8, sizeof out->frustum);
+    return true;
+}
+
+/* LB_CAMLOG=N: log the world camera every N frames (to check the layout above). */
+static void camera_log(void) {
+    static int every = -1;
+    if (every < 0) every = getenv("LB_CAMLOG") ? atoi(getenv("LB_CAMLOG")) : 0;
+    if (every <= 0 || g_frame % every) return;
+    GameCamera cam;
+    if (!game_camera_read(&cam)) { fprintf(stderr, "cam %d: none\n", g_frame); return; }
+    const float *r = cam.rot, *f = cam.frustum;
+    uint32_t pc = M32(0x12E7288);
+    float fov = 0, fov1 = 0;
+    if (pc >= 0x10000) { memcpy(&fov, MEM + pc + 0xAC, 4); memcpy(&fov1, MEM + pc + 0xB0, 4); }
+    fprintf(stderr, "cam %d: rot [%.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f] pos %.1f %.1f %.1f "
+            "frustum l %.3f r %.3f t %.3f b %.3f near %.2f far %.0f fov %.1f/%.1f\n", g_frame,
+            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], cam.pos[0], cam.pos[1], cam.pos[2],
+            f[0], f[1], f[2], f[3], f[4], f[5], fov, fov1);
+}
+
 void B_IDirect3DDevice9_Present(CPU *c) {
     auto *d = (IDirect3DDevice9 *)com_host(ARG(0));
     if (g_trace_from < 0) {
@@ -620,6 +652,7 @@ void B_IDirect3DDevice9_Present(CPU *c) {
         if (e) sscanf(e, "%d:%d", &g_trace_from, &g_trace_to);
     }
     g_frame++;
+    camera_log();
     g_d3d_trace = g_frame >= g_trace_from && g_frame <= g_trace_to;
     if (g_d3d_trace) fprintf(stderr, "D3D %d Present\n", g_frame);
     extern void touch_draw(IDirect3DDevice9 *d);

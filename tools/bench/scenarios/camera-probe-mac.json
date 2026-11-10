@@ -1,0 +1,14 @@
+{
+  "description": "Mac: checks the world-camera read (LB_CAMLOG). coc into Riverwood, stand, turn right with L for 1.5 s, stand, run forward. Run with --env LB_CAMLOG=30.",
+  "console_at": 600,
+  "console": ["coc riverwood"],
+  "command_gap": 30,
+  "console_close": false,
+  "keys": [
+    {"key": "L", "start": 2400, "frames": 90},
+    {"key": "W", "start": 2700, "frames": 120}
+  ],
+  "phases": {"idle": [2200, 2400], "turn": [2400, 2490], "run": [2700, 2820]},
+  "shots": [2390, 2600],
+  "exit_frame": 2900
+}
