@@ -1,0 +1,17 @@
+{
+  "description": "The heavier city cell: god mode, coc into Whiterun, stand for 10 s, run forward for 20 s. Same calibration caveat as riverwood-walk.",
+  "console_at": 1800,
+  "console": ["tgm", "coc whiterun"],
+  "command_gap": 30,
+  "keys": [
+    {"key": "W", "start": 3600, "frames": 1200}
+  ],
+  "phases": {
+    "menu": [600, 1800],
+    "load": [1900, 3000],
+    "idle": [3000, 3600],
+    "run": [3600, 4800]
+  },
+  "shots": [1700, 2950, 3590, 4790],
+  "exit_frame": 4900
+}
