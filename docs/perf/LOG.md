@@ -249,3 +249,19 @@ Running total: baseline 11.47 → 8.94 ms idle (**−22%**).
 - **Not yet known:** the immersive screen's cost (compositor at 90 Hz plus the tap), busier or combat scenes,
   and long-session thermals. The depth build (`depth-v2`, binary 2569a7db…) was installed at the end of the
   session for the "Skyrim - M1" session's immersive test.
+
+## 2026-11-10 — first immersive runs on the headset (logs only; the depth build is the "Skyrim - M1" session's)
+
+Three sessions of `depth-v2` in the immersive space, logs in `bench-results/avp-immersive-20261110T1258/`:
+
+- **It runs:** tap-only presents, colour and depth exported for all three slots, the compositor at 90 Hz in
+  every report but the first (87), depth on in two sessions and off in one.
+- **The game's frames don't all reach the display.** With the cap at 120 fps the game's own pacing shows
+  110–120 fps in Whiterun, and with the normal cap 60 fps, but the compositor reports 40–51 new frames per
+  second in the first case and 45–56 in the second. Depth on or off makes no difference. So the displayed game
+  rate sits near 47 fps regardless of how fast the game renders, which points at the frame handoff (when a
+  tapped frame counts as ready, or slots being held), not at the game's CPU or the depth pass.
+- **CPU isn't short in immersive:** at the 60 fps cap the whole process uses about 90% of one core and the main
+  thread 22–25%.
+- The new profiler's tables appear in these logs, so it works on the device.
+- Thermal state went from nominal to fair once, about two minutes into the second session.
