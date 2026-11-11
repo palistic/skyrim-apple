@@ -1,0 +1,129 @@
+{
+  "description": "Headset version of boss-fight-mac (same batch file, placed in Documents/Skyrim by the bench). Frame numbers follow whiterun-market-avp (menu by 1800, city loaded by 6000 with LB_MAX_FPS=120): the mac timings shifted by 4200. Placeholders until one `bench.py calibrate` on the device.",
+  "console_at": 1800,
+  "console": [
+    "coc whiterunorigin"
+  ],
+  "console_close": false,
+  "keys": [
+    {
+      "key": "`",
+      "start": 6100,
+      "frames": 2
+    },
+    {
+      "key": "B",
+      "start": 6120,
+      "frames": 2
+    },
+    {
+      "key": "A",
+      "start": 6126,
+      "frames": 2
+    },
+    {
+      "key": "T",
+      "start": 6132,
+      "frames": 2
+    },
+    {
+      "key": "Space",
+      "start": 6138,
+      "frames": 2
+    },
+    {
+      "key": "B",
+      "start": 6144,
+      "frames": 2
+    },
+    {
+      "key": "E",
+      "start": 6150,
+      "frames": 2
+    },
+    {
+      "key": "N",
+      "start": 6156,
+      "frames": 2
+    },
+    {
+      "key": "C",
+      "start": 6162,
+      "frames": 2
+    },
+    {
+      "key": "H",
+      "start": 6168,
+      "frames": 2
+    },
+    {
+      "key": "B",
+      "start": 6174,
+      "frames": 2
+    },
+    {
+      "key": "O",
+      "start": 6180,
+      "frames": 2
+    },
+    {
+      "key": "S",
+      "start": 6186,
+      "frames": 2
+    },
+    {
+      "key": "S",
+      "start": 6192,
+      "frames": 2
+    },
+    {
+      "key": "Return",
+      "start": 6198,
+      "frames": 2
+    },
+    {
+      "key": "`",
+      "start": 6228,
+      "frames": 2
+    }
+  ],
+  "phases": {
+    "calm": [
+      5700,
+      6080
+    ],
+    "early": [
+      6300,
+      7500
+    ],
+    "late": [
+      7500,
+      8700
+    ]
+  },
+  "shots": [
+    6050,
+    6400,
+    6900,
+    7400,
+    8000,
+    8690
+  ],
+  "exit_frame": 8800,
+  "game_files": {
+    "benchboss.txt": [
+      "tgm",
+      "fw 000C8220",
+      "player.placeatme 000F811C 1",
+      "player.placeatme 000F811A 1",
+      "player.placeatme 00039D21 6",
+      "player.placeatme 00037C47 4",
+      "player.placeatme 00039D5E 4",
+      "player.placeatme 00023AA8 2"
+    ]
+  },
+  "env": {
+    "LB_VPAD": "0",
+    "LB_MAX_FPS": "120"
+  }
+}

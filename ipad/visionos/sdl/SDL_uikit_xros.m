@@ -4,6 +4,10 @@
 
 #if TARGET_OS_VISION && defined(__OBJC__)
 #import <QuartzCore/QuartzCore.h>
+#import <GameController/GameController.h>
+#include "SDL_mouse.h"
+#include <string.h>
+#include <stdlib.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -190,6 +194,74 @@ void SDLXR_MouseDelta(void)
     if (xr_over) xr_deltas_over++; else xr_deltas_off++;
 }
 
+/* Clicks and scroll from GCMouse, counted like the deltas (docs/VISIONOS_POINTER_PLAN.md step 1). */
+static _Atomic int xr_clicks_over, xr_clicks_off, xr_scroll_over, xr_scroll_off;
+static _Atomic double xr_press_at;
+void SDLXR_MouseButton(int pressed)
+{
+    if (!pressed) return;
+    xr_press_at = CACurrentMediaTime();
+    if (xr_over) xr_clicks_over++; else xr_clicks_off++;
+}
+void SDLXR_MouseScroll(void)
+{
+    if (xr_over) xr_scroll_over++; else xr_scroll_off++;
+}
+
+/* SDL's window and its view controller: the window in the game scene whose root controller is SDL's. */
+static UIWindow *xr_sdl_window(void)
+{
+    for (UIWindow *w in SDLXR_ActiveScene().windows)
+        if ([NSStringFromClass(w.rootViewController.class) hasPrefix:@"SDL_"]) return w;
+    return nil;
+}
+
+/* Immersive play: SDL's window stays as the trackpad's pointer surface but is nearly invisible (alpha 0.02 still
+ * takes pointer input; below 0.01 UIKit stops hit-testing it), so it doesn't cover the immersive picture. */
+void skyrim_sdl_set_window_ghost(int on)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *w = xr_sdl_window();
+        /* Nearly invisible rather than hidden: a hidden UIWindow could cost SDL its keyboard focus and with it
+         * relative mode, which GCMouse motion needs. At 0.02 UIKit still hit-tests it (below 0.01 it stops), so
+         * it stays the pointer surface over the window's near-invisible fill. */
+        w.alpha = on ? 0.02 : 1.0;
+        fprintf(stderr, "pointer: game window %s\n", w ? (on ? "ghosted for immersive" : "shown") : "not found");
+    });
+}
+
+/* The SwiftUI pointer surface's hover position (GameSurface.swift), for the edge turn. Main thread. */
+void skyrim_xr_hover(float x) { SDLXR_PointerMoved(x); }
+void skyrim_xr_hover_left(void) { SDLXR_PointerLeft(); }
+
+/* When GCMouse last pressed a button, so a spatial click from the same press isn't counted twice. */
+double skyrim_xr_last_mouse_press(void) { return xr_press_at; }
+
+/* LB_POINTER_LOCK: "1" (default) leaves SDL's request as it is; "key" also makes SDL's window the key window and
+ * asks UIKit to re-read the lock preference, in case UIKit asks the key window's root controller and that was
+ * SwiftUI's. Main thread, every 2 s while relative mode is on. */
+static void xr_pointer_lock_variant(double now)
+{
+    static int mode = -1;
+    static double last;
+    if (mode < 0) {
+        const char *v = getenv("LB_POINTER_LOCK");
+        mode = v && !strcmp(v, "key") ? 1 : 0;
+        fprintf(stderr, "pointer: lock variant %s\n", mode ? "key" : "default");
+        [NSNotificationCenter.defaultCenter addObserverForName:UIPointerLockStateDidChangeNotification object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+                UIPointerLockState *state = note.object;
+                fprintf(stderr, "pointer: lock state changed, locked %d\n", state.isLocked ? 1 : 0);
+            }];
+    }
+    if (!mode || now - last < 2.0 || !SDL_GetRelativeMouseMode()) return;
+    last = now;
+    UIWindow *w = xr_sdl_window();
+    if (!w) return;
+    if (!w.isKeyWindow) [w makeKeyWindow];
+    [w.rootViewController setNeedsUpdateOfPrefersPointerLocked];
+}
+
 /* Turning wanted this frame, -1 (left) to 1 (right); 0 when the pointer is locked or not at an edge. Main thread. */
 float skyrim_xr_pointer_edge(void)
 {
@@ -197,6 +269,7 @@ float skyrim_xr_pointer_edge(void)
     static int edge_frames, reported_lock = -1;
     double now = CACurrentMediaTime(), delta_at = xr_delta_at;
     double last = xr_moved_at > delta_at ? xr_moved_at : delta_at;
+    xr_pointer_lock_variant(now);
     int locked = SDLXR_ActiveScene().pointerLockState.isLocked ? 1 : 0;
     float edge = 0.0f;
     if (!locked && xr_seen && xr_arrived && now - last < XR_HOLD && fabsf(xr_x) > XR_EDGE) {
@@ -206,9 +279,22 @@ float skyrim_xr_pointer_edge(void)
     if (locked != reported_lock || now - reported_at >= 10.0) {
         int moves = atomic_exchange(&xr_moves, 0), over = atomic_exchange(&xr_deltas_over, 0);
         int off = atomic_exchange(&xr_deltas_off, 0);
-        if (locked != reported_lock || moves || over || off || edge_frames) {
-            fprintf(stderr, "pointer: locked %d, hover moves %d, mouse deltas %d over window / %d off, edge turn %d frames\n",
-                    locked, moves, over, off, edge_frames);
+        int c_over = atomic_exchange(&xr_clicks_over, 0), c_off = atomic_exchange(&xr_clicks_off, 0);
+        int s_over = atomic_exchange(&xr_scroll_over, 0), s_off = atomic_exchange(&xr_scroll_off, 0);
+        if (locked != reported_lock || moves || over || off || edge_frames || c_over || c_off || s_over || s_off) {
+            UIWindowScene *scene = SDLXR_ActiveScene();
+            UIWindow *key = nil;
+            for (UIWindow *w in scene.windows) if (w.isKeyWindow) key = w;
+            UIWindow *sdl = xr_sdl_window();
+            fprintf(stderr, "pointer: locked %d (state %s), hover moves %d, mouse deltas %d over window / %d off, "
+                    "clicks %d/%d, scroll %d/%d, edge turn %d frames; scene %ld, %lu windows, key %s (%s), "
+                    "SDL prefers lock %d, relative %d, mice %lu\n",
+                    locked, scene.pointerLockState ? "set" : "nil", moves, over, off, c_over, c_off, s_over, s_off,
+                    edge_frames, (long)scene.activationState, (unsigned long)scene.windows.count,
+                    key == nil ? "none" : key == sdl ? "SDL" : "other",
+                    key ? NSStringFromClass(key.rootViewController.class).UTF8String : "-",
+                    sdl ? (sdl.rootViewController.prefersPointerLocked ? 1 : 0) : -1,
+                    SDL_GetRelativeMouseMode() ? 1 : 0, (unsigned long)GCMouse.mice.count);
         }
         reported_lock = locked;
         reported_at = now;

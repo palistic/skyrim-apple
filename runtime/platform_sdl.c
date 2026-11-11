@@ -9,6 +9,8 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#include <pthread.h>
+#include <pthread/qos.h>
 /* Apple input policy (input.c, dinput.c) on macOS, iOS, iPadOS and the iPad
  * Simulator: DirectInput keyboard and mouse are tracked from the events pumped
  * here, and controllers attached at launch are XInput pads from the first
@@ -61,7 +63,29 @@ static void capture_mouse(void) {
 }
 #endif
 
+/* Mouse id of the motion events edge_turn synthesizes (SDL_TOUCH_MOUSEID is (Uint32)-1). */
+#define LB_EDGE_TURN_MOUSEID ((Uint32)-2)
+
 #if defined(LB_IOS_DEVICE) && TARGET_OS_VISION
+/* A spatial click on the immersive layer (an indirect pinch, which is also how a trackpad click can arrive):
+ * a left button, unless GCMouse pressed a button within 0.25 s (the same click arriving both ways). A press that
+ * was skipped skips its release too. Any thread. */
+double skyrim_xr_last_mouse_press(void);
+void dinput_inject_button(int b, int down);
+void skyrim_spatial_click(int down) {
+    static atomic_int pressed;
+    if (down) {
+        if (atomic_load(&pressed)) return;  /* an active pinch reports every update */
+        extern double CACurrentMediaTime(void);
+        if (CACurrentMediaTime() - skyrim_xr_last_mouse_press() < 0.25) return;
+        atomic_store(&pressed, 1);
+        dinput_inject_button(0, 1);
+        LOG("pointer: spatial click");
+    } else if (atomic_exchange(&pressed, 0)) {
+        dinput_inject_button(0, 0);
+    }
+}
+
 /* The SDL overlay's edge turn (ipad/visionos/sdl/SDL_uikit_xros.m): while the pointer is pushed against a side of
  * the window, feed the game the motion it can no longer get. LB_EDGE_TURN is the full rate in mouse counts per
  * second (0 turns it off). Main thread only. */
@@ -86,8 +110,160 @@ static void edge_turn(void) {
     SDL_zero(e);
     e.type = SDL_MOUSEMOTION;
     e.motion.windowID = SDL_GetWindowID(g_window);
+    e.motion.which = LB_EDGE_TURN_MOUSEID;  /* synthetic: head steering must not read it as the player's mouse */
     e.motion.xrel = dx;
     SDL_PushEvent(&e);
+}
+#endif
+
+#if defined(__APPLE__)
+/* Head steering (docs/HEAD_TRACKING.md): turns the game's view toward the head's direction with synthetic mouse
+ * look, closed-loop on the camera the game last presented, so nothing drifts. The immersive compositor publishes
+ * the head's yaw and pitch (radians; yaw clockwise from the starting direction, pitch up) through
+ * skyrim_head_set. LB_HEAD_TEST=<yaw deg>,<pitch deg> or LB_HEAD_TEST=sweep fakes a head for the Mac build.
+ * With a pad connected (the game is then in gamepad mode and ignores mouse look) it deflects the right stick
+ * instead: LB_HEAD_STICK_GAIN = full deflection per radian of error, LB_HEAD_STICK_DEAD = the game's dead zone.
+ * Without one: LB_HEAD_COUNTS = mouse counts per radian of game turn, LB_HEAD_GAIN = fraction sent per frame.
+ * Off while a menu is open. Real mouse motion takes over and re-anchors the head's straight-ahead to wherever the game then points.
+ * Main thread only, except skyrim_head_set. */
+#include <math.h>
+#include <stdatomic.h>
+int skyrim_frame_camera(float out[18]);  /* runtime/d3d9_bridge.cpp */
+int skyrim_menu_open(void);
+static _Atomic float g_head_yaw, g_head_pitch;
+static atomic_int g_head_on;
+void skyrim_head_set(float yaw, float pitch, int on) {
+    atomic_store(&g_head_yaw, yaw);
+    atomic_store(&g_head_pitch, pitch);
+    atomic_store(&g_head_on, on);
+}
+static int g_head_external;  /* frames left during which real mouse motion owns the view */
+static _Atomic float g_head_offset;  /* game heading minus head yaw: where the head's straight-ahead points */
+static atomic_int g_head_anchored;
+/* For the compositor: the game heading (radians) that the head's yaw 0 maps to, or 0 with *valid = 0. */
+float skyrim_head_offset(int *valid) { *valid = atomic_load(&g_head_anchored); return atomic_load(&g_head_offset); }
+static void head_note_event(const SDL_Event *e) {
+    if (e->type == SDL_MOUSEMOTION && e->motion.which != SDL_TOUCH_MOUSEID
+        && e->motion.which != LB_EDGE_TURN_MOUSEID && (e->motion.xrel || e->motion.yrel))
+        g_head_external = 15;
+}
+static float head_wrap(float a) { return a - 6.2831853f * floorf((a + 3.1415927f) / 6.2831853f); }
+static void head_steer(void) {
+    static int init, test, logged;
+    static float counts, gain, stick_gain, stick_dead, test_yaw, test_pitch, offset, carry_x, carry_y;
+    static int anchored, frame;
+    if (!init) {
+        init = 1;
+        const char *t = getenv("LB_HEAD_TEST");
+        if (t && !strcmp(t, "sweep")) test = 2;
+        else if (t && sscanf(t, "%f,%f", &test_yaw, &test_pitch) >= 1) test = 1;
+        counts = getenv("LB_HEAD_COUNTS") ? (float)atof(getenv("LB_HEAD_COUNTS")) : 1000.0f;
+        gain = getenv("LB_HEAD_GAIN") ? (float)atof(getenv("LB_HEAD_GAIN")) : 0.2f;
+        stick_gain = getenv("LB_HEAD_STICK_GAIN") ? (float)atof(getenv("LB_HEAD_STICK_GAIN")) : 7.0f;
+        stick_dead = getenv("LB_HEAD_STICK_DEAD") ? (float)atof(getenv("LB_HEAD_STICK_DEAD")) : 0.25f;
+        if (test) LOG("head: test %s, %.0f counts/rad, gain %.2f", t, counts, gain);
+    }
+    frame++;
+    float head_yaw, head_pitch;
+    if (test == 1) { head_yaw = test_yaw * 0.017453293f; head_pitch = test_pitch * 0.017453293f; }
+    else if (test == 2) { float t = frame / 60.0f; head_yaw = 0.6f * sinf(t * 0.8f); head_pitch = 0.25f * sinf(t * 0.5f); }
+    else if (atomic_load(&g_head_on)) { head_yaw = atomic_load(&g_head_yaw); head_pitch = atomic_load(&g_head_pitch); }
+    else { if (anchored) { void input_head_stick(float, float); input_head_stick(0, 0); } anchored = 0; atomic_store(&g_head_anchored, 0); return; }
+    float cam[18];
+    if (!g_window) return;
+    void input_head_stick(float x, float y);
+    /* Menus, loading screens and any frame without the world camera: let go of the stick (a held deflection would
+     * scroll the menu) and re-anchor once the world is back. A menu frame carries no camera either. */
+    if (skyrim_menu_open() || !skyrim_frame_camera(cam)) {
+        anchored = 0;
+        atomic_store(&g_head_anchored, 0);
+        input_head_stick(0, 0);
+        return;
+    }
+    /* Columns of the camera rotation: forward (cam[0], cam[3], cam[6]); Skyrim heading is clockwise from +Y. */
+    float game_yaw = atan2f(cam[0], cam[3]);
+    float game_pitch = asinf(fmaxf(-1.0f, fminf(1.0f, cam[6])));
+    if (!anchored || g_head_external > 0) {
+        offset = head_wrap(game_yaw - head_yaw);
+        atomic_store(&g_head_offset, offset);
+        atomic_store(&g_head_anchored, 1);
+        anchored = 1;
+        carry_x = carry_y = 0;
+        if (g_head_external > 0) g_head_external--;
+        return;
+    }
+    float err_yaw = head_wrap(head_yaw + offset - game_yaw);
+    float err_pitch = fmaxf(-1.1f, fminf(1.1f, head_pitch)) - game_pitch;
+    if (fabsf(game_pitch) > 1.2f) err_yaw = 0;  /* looking nearly straight up or down: the heading is meaningless */
+    void input_head_stick(float x, float y);
+    int input_pad_connected(void), input_right_stick_moved(void);
+    if (input_right_stick_moved()) { g_head_external = 15; input_head_stick(0, 0); return; }
+    if (input_pad_connected()) {
+        /* Gamepad mode: the stick sets a turn rate. Proportional, starting just past the game's dead zone. */
+        float sx = err_yaw * stick_gain, sy = err_pitch * stick_gain;
+        float mx = fabsf(sx) > 0.003f ? copysignf(stick_dead + (1 - stick_dead) * fminf(1, fabsf(sx)), sx) : 0;
+        float my = fabsf(sy) > 0.003f ? copysignf(stick_dead + (1 - stick_dead) * fminf(1, fabsf(sy)), sy) : 0;
+        input_head_stick(mx, my);
+        if (test && frame - logged >= 30) {
+            logged = frame;
+            LOG("head: frame %d target %.1f/%.1f game %.1f/%.1f err %.2f/%.2f deg stick %.2f,%.2f", frame,
+                (head_yaw + offset) * 57.29578f, head_pitch * 57.29578f, game_yaw * 57.29578f, game_pitch * 57.29578f,
+                err_yaw * 57.29578f, err_pitch * 57.29578f, mx, my);
+        }
+        return;
+    }
+    input_head_stick(0, 0);
+    /* Mouse path. How far the game turns per count depends on the player's sensitivity setting, so the gain is
+     * kept low (stable up to several times the default sensitivity; on the Mac at the default it follows a 27
+     * deg/s sweep about 10 deg behind) and each frame's motion is capped. Y inversion isn't handled. */
+    static float prev_err, ysign = 1, win_dy, win_pitch0;
+    static int diverging, win_n;
+    const float kx = counts, ky = counts;
+    /* Inverted Y (the game's Invert Y Axis option): over 20-frame windows, if the pitch moved against the
+     * vertical motion sent, flip the sign. Uninverted, mouse down (dy > 0) looks down. */
+    if (win_n == 0) { win_pitch0 = game_pitch; win_dy = 0; }
+    if (++win_n >= 20) {
+        float tilted = game_pitch - win_pitch0;
+        /* expected: dy > 0 tilts down (tilted < 0) when ysign = 1, up when ysign = -1 */
+        if (fabsf(win_dy) > 40 && fabsf(tilted) > 0.02f && (tilted > 0) == ((win_dy > 0) == (ysign > 0))) {
+            ysign = -ysign;
+            LOG("head: vertical mouse looks inverted; flipping (now %s)", ysign > 0 ? "normal" : "inverted");
+        }
+        win_n = 0;
+    }
+    /* Safety: an error that keeps growing past 40 degrees means the loop is fighting the game; stop and re-anchor. */
+    float err_abs = fabsf(err_yaw) + fabsf(err_pitch);
+    diverging = err_abs > 0.7f && err_abs > prev_err ? diverging + 1 : 0;
+    prev_err = err_abs;
+    if (diverging > 30) {
+        LOG("head: mouse steering diverged (error %.0f deg); re-anchoring", err_abs * 57.3f);
+        diverging = 0; anchored = 0; atomic_store(&g_head_anchored, 0);
+        return;
+    }
+    /* The gain is per 60 Hz frame: scale by this frame's length so a frame cap (LB_MAX_FPS=30/45) responds as fast. */
+    static double prev_t;
+    double t_now = (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+    float frame_scale = prev_t > 0 ? (float)((t_now - prev_t) * 60.0) : 1.0f;
+    prev_t = t_now;
+    frame_scale = fmaxf(0.5f, fminf(3.0f, frame_scale));
+    carry_x += err_yaw * kx * gain * frame_scale;
+    carry_y -= err_pitch * ky * gain * ysign * frame_scale;   /* mouse down = look down, unless inverted */
+    float cap = 40;
+    carry_x = fmaxf(-cap, fminf(cap, carry_x));
+    carry_y = fmaxf(-cap, fminf(cap, carry_y));
+    int dx = (int)carry_x, dy = (int)carry_y;
+    carry_x -= dx;
+    carry_y -= dy;
+    win_dy += dy;
+    if (frame - logged >= (test ? 30 : 600)) {
+        logged = frame;
+        LOG("head: mouse target %.1f/%.1f game %.1f/%.1f err %.2f/%.2f deg sent %d,%d (%.0f counts/rad/frame)",
+            (head_yaw + offset) * 57.29578f, head_pitch * 57.29578f, game_yaw * 57.29578f, game_pitch * 57.29578f,
+            err_yaw * 57.29578f, err_pitch * 57.29578f, dx, dy, kx * gain);
+    }
+    if (!dx && !dy) return;
+    void dinput_inject_mouse(int dx, int dy);
+    dinput_inject_mouse(dx, dy);
 }
 #endif
 
@@ -256,6 +432,13 @@ static void native_hold_frames(void) {
 #endif
 
 void platform_init(void) {
+#if defined(__APPLE__)
+    /* LB_QOS=1: the game's main thread (it also presents) in the user-interactive QoS class; see kernel32.c. */
+    if (getenv("LB_QOS") && (*getenv("LB_QOS") >= '1' && *getenv("LB_QOS") <= '3')) {
+        int r = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        LOG("qos: main thread user-interactive (%d)", r);
+    }
+#endif
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0)
         rt_fatal("SDL_Init: %s", SDL_GetError());
@@ -533,6 +716,9 @@ void platform_present_hook(void) {
 #ifdef LB_APPLE_INPUT
         dinput_handle_event(&e);
 #endif
+#if defined(__APPLE__)
+        head_note_event(&e);
+#endif
         if (text_event(&e)) continue;
         if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP)
             key_event(e.key.keysym.scancode, e.type == SDL_KEYDOWN);
@@ -542,6 +728,9 @@ void platform_present_hook(void) {
         touch_handle_event(&e);
     }
     script_events();
+#if defined(__APPLE__)
+    if (pthread_main_np()) head_steer();
+#endif
 #ifdef LB_MAC_MAIN_PUMP
     if (pthread_main_np()) capture_mouse();
     pace_frame();

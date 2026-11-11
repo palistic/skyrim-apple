@@ -166,6 +166,33 @@ static void mouse_record(uint32_t ofs, uint32_t data) {
     r->seq = ++g_mouse.seq;
 }
 
+/* Relative mouse motion from the runtime itself (head steering, runtime/platform_sdl.c), straight into the
+ * DirectInput mouse: an event pushed into SDL's queue can be dropped by the platform backend. Any thread. */
+void dinput_inject_mouse(int dx, int dy) {
+    static int invert = -1;  /* LB_TEST_INVERT_Y=1: behave like the game's Invert Y option, for testing */
+    if (invert < 0) invert = getenv("LB_TEST_INVERT_Y") && *getenv("LB_TEST_INVERT_Y") == '1';
+    if (invert) dy = -dy;
+    pthread_mutex_lock(&g_di_lock);
+    g_di_fed = 1;
+    g_mouse.dx += dx;
+    g_mouse.dy += dy;
+    if (dx) mouse_record(0, (uint32_t)dx);  /* DIMOFS_X */
+    if (dy) mouse_record(4, (uint32_t)dy);  /* DIMOFS_Y */
+    pthread_mutex_unlock(&g_di_lock);
+}
+
+/* A mouse button from the runtime itself (spatial clicks on visionOS): b 0 = left. Any thread. */
+void dinput_inject_button(int b, int down) {
+    if (b < 0 || b > 7) return;
+    pthread_mutex_lock(&g_di_lock);
+    g_di_fed = 1;
+    uint8_t bit = (uint8_t)(1u << b);
+    if (down) { g_mouse.held |= bit; g_mouse.presses[b]++; }
+    else g_mouse.held &= (uint8_t)~bit;
+    mouse_record(12u + (uint32_t)b, down ? 0x80 : 0);  /* DIMOFS_BUTTONn */
+    pthread_mutex_unlock(&g_di_lock);
+}
+
 /* Called by the platform layer for every SDL event it pumps, on any thread. */
 void dinput_handle_event(const SDL_Event *e) {
     pthread_mutex_lock(&g_di_lock);

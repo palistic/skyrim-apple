@@ -72,6 +72,16 @@ void SDLXR_PointerMoved(float x);
 void SDLXR_PointerLeft(void);
 /* A GCMouse delta arrived; called on GameController's handler queue. */
 void SDLXR_MouseDelta(void);
+/* GCMouse button (pressed or released) and scroll, counted for the pointer log. */
+void SDLXR_MouseButton(int pressed);
+void SDLXR_MouseScroll(void);
+/* C entry for Swift: 1 while immersive play runs (SDL's window nearly invisible), 0 to show it again. */
+void skyrim_sdl_set_window_ghost(int on);
+/* The SwiftUI pointer surface's hover: x from -1 (left edge) to 1 (right edge), and leaving it. Main thread. */
+void skyrim_xr_hover(float x);
+void skyrim_xr_hover_left(void);
+/* CACurrentMediaTime() of the last GCMouse button press, 0 if none. */
+double skyrim_xr_last_mouse_press(void);
 
 /* Token renames, scoped to the SDL UIKit sources that include this header. */
 #define UIScreenMode SDLXRScreenMode

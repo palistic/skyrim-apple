@@ -1,0 +1,11 @@
+{
+  "description": "Mac: head steering with a fake head (run with --env LB_HEAD_TEST=sweep, or =<yaw>,<pitch>). coc into Riverwood and stand while the controller turns the view.",
+  "console_at": 600,
+  "console": ["coc riverwood"],
+  "command_gap": 30,
+  "console_close": false,
+  "keys": [],
+  "phases": {"steer": [2300, 3200]},
+  "shots": [2400, 2800, 3200],
+  "exit_frame": 3300
+}

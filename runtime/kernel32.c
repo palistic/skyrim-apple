@@ -384,6 +384,7 @@ typedef struct {
     Waitable w;
     uint32_t start, param, tid, exit_code;
     int suspended;
+    int qos_set, qos_prio;  /* a SetThreadPriority from another thread, applied at start (LB_QOS) */
     pthread_t pt;
 } GThread;
 
@@ -397,6 +398,19 @@ static void *thread_main(void *arg) {
     pthread_mutex_lock(&g_wlock);
     while (t->suspended) pthread_cond_wait(&g_wcond, &g_wlock);
     pthread_mutex_unlock(&g_wlock);
+#if defined(__APPLE__)
+    /* LB_QOS=2: every game thread user-interactive from its start (in the boss fight two job threads each run
+     * lifted code at about two thirds of a core, as much as the main thread; keep them off efficiency cores). */
+    if (getenv("LB_QOS") && *getenv("LB_QOS") == '2') {
+        int r = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        LOG("qos: thread %u user-interactive (%d)", t->tid, r);
+    } else if (t->qos_set) {
+        extern int kernel32_apply_qos(int prio);
+        int r = kernel32_apply_qos(t->qos_prio);
+        extern unsigned kernel32_qos_class(int prio);
+        LOG("qos: thread %u starts at priority %d, class %x (%d)", t->tid, t->qos_prio, kernel32_qos_class(t->qos_prio), r);
+    }
+#endif
     uint32_t args[1] = {t->param};
     t->exit_code = rt_invoke(c, t->start, 1, args);
     thread_exit_slot(c);
@@ -452,7 +466,52 @@ SHIM(GetCurrentThreadId) { RET(M32(TEB(c) + 0x24), 0); }
 SHIM(GetCurrentProcessId) { RET(0x42, 0); }
 SHIM(GetCurrentThread) { RET(0xFFFFFFFEu, 0); }
 SHIM(GetCurrentProcess) { RET(0xFFFFFFFFu, 0); }
-SHIM(SetThreadPriority) { RET(1, 2); }
+/* LB_QOS=1 (Apple): the game's thread priorities become QoS classes. Darwin can only set a running thread's QoS
+ * from that thread, so a priority set on another thread is kept and applied when it starts (CreateThread
+ * suspended, then SetThreadPriority, is the usual order); one for a thread already running is dropped. */
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+static int qos_on(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("LB_QOS") && (*getenv("LB_QOS") == '1' || *getenv("LB_QOS") == '3');  /* 2: see thread_main */
+    return on;
+}
+static qos_class_t qos_of(int32_t prio) {
+    if (prio >= 2) return QOS_CLASS_USER_INTERACTIVE;   /* HIGHEST, TIME_CRITICAL */
+    if (prio >= 0) return QOS_CLASS_USER_INITIATED;     /* NORMAL, ABOVE_NORMAL */
+    /* LB_QOS=3: the same mapping, but nothing below user-initiated, in case a job thread the game marks below
+     * normal carries real load (it does in the boss fight) and would otherwise land on efficiency cores. */
+    if (getenv("LB_QOS")[0] == '3') return QOS_CLASS_USER_INITIATED;
+    if (prio >= -2) return QOS_CLASS_UTILITY;           /* BELOW_NORMAL, LOWEST */
+    return QOS_CLASS_BACKGROUND;                        /* IDLE */
+}
+#endif
+#if defined(__APPLE__)
+int kernel32_apply_qos(int prio) { return pthread_set_qos_class_self_np(qos_of(prio), 0); }
+unsigned kernel32_qos_class(int prio) { return (unsigned)qos_of(prio); }
+#endif
+SHIM(SetThreadPriority) {
+#if defined(__APPLE__)
+    if (qos_on()) {
+        uint32_t h = ARG(0);
+        int32_t prio = (int32_t)ARG(1);
+        GThread *t = h == 0xFFFFFFFEu ? t_gthread : h_get(h, H_THREAD);
+        if (h != 0xFFFFFFFEu && !t) {
+            /* invalid or stale handle: ignore (on the main thread t_gthread is NULL too, so don't compare) */
+        } else if (pthread_main_np()) {
+            /* the main thread stays user-interactive (platform_init); the game asking for normal must not lower it */
+            if (h != 0xFFFFFFFEu && t != t_gthread && t) { t->qos_prio = prio; t->qos_set = 1; }
+        } else if (h == 0xFFFFFFFEu || t == t_gthread) {
+            int r = pthread_set_qos_class_self_np(qos_of(prio), 0);
+            LOG("qos: thread %u priority %d -> class %x (%d)", t ? t->tid : 0, prio, (unsigned)qos_of(prio), r);
+        } else if (t) {
+            t->qos_prio = prio;
+            t->qos_set = 1;
+        }
+    }
+#endif
+    RET(1, 2);
+}
 SHIM(SetThreadAffinityMask) { RET(1, 2); }
 SHIM(SetProcessAffinityMask) { RET(1, 2); }
 /* The game sizes its job system from the processor count; it used to see 1.
@@ -469,9 +528,31 @@ SHIM(GetProcessAffinityMask) {
     RET(1, 3);
 }
 SHIM(SetThreadExecutionState) { RET(0x80000000u, 1); }
+/* Sleep(0) in a tight loop (the loading threads spin on it for most of a load) burns a whole core on Apple
+ * platforms, where sched_yield rarely has anyone to yield to. After LB_YIELD_SPINS (8) back-to-back yields on a
+ * thread, each further one sleeps LB_YIELD_SLEEP_US microseconds instead (off by default; try 250). A
+ * yield more than 2 ms after the previous one starts a new run. */
+static void yield_or_nap(void) {
+    static int nap_us = -1, spins;
+    if (nap_us < 0) {
+        const char *v = getenv("LB_YIELD_SLEEP_US"), *n = getenv("LB_YIELD_SPINS");
+        spins = n && *n ? atoi(n) : 8;
+        nap_us = v && *v ? atoi(v) : 0;  /* off by default: not yet shown to help (Mac runs too noisy) */
+    }
+    static __thread uint64_t last_ns;
+    static __thread int run;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    run = now - last_ns < 2000000ull ? run + 1 : 0;
+    last_ns = now;
+    if (nap_us > 0 && run >= spins) usleep((useconds_t)nap_us);
+    else sched_yield();
+}
+
 SHIM(Sleep) {
     uint32_t ms = ARG(0);
-    if (ms == 0) sched_yield();
+    if (ms == 0) yield_or_nap();
     else usleep(ms * 1000);
     RET(0, 1);
 }
@@ -924,7 +1005,7 @@ SHIM(SleepEx) {
     uint32_t ms = ARG(0), alertable = ARG(1);
     if (alertable && run_apcs(c)) RET(0xC0, 2);  /* WAIT_IO_COMPLETION */
     if (ms == 0xFFFFFFFFu) ms = 1;  /* nothing else can queue an APC for us */
-    if (ms == 0) sched_yield(); else usleep(ms * 1000u);
+    if (ms == 0) yield_or_nap(); else usleep(ms * 1000u);
     RET(0, 2);
 }
 

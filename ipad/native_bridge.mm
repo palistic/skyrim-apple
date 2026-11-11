@@ -14,6 +14,8 @@
 #include <atomic>
 #include <errno.h>
 #include <stdio.h>
+#include <sys/resource.h>
+#import <QuartzCore/QuartzCore.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -233,6 +235,39 @@ extern "C" int skyrim_native_run(const char *save_root, char *error, size_t erro
             NSInteger now = NSProcessInfo.processInfo.thermalState;
             fprintf(stderr, "native: thermal %s\n", now >= 0 && now < 4 ? thermal[now] : "unknown");
         }];
+
+        /* Battery, thermal state and the process's CPU use, every 10 s (LB_POWER_LOG_S=1 for every second, for a
+         * battery soak), flushed to disk each time so the last state survives a sudden power-off. On a background
+         * queue: the game owns the main thread. visionOS may or may not report the external battery; -1 means
+         * unknown. */
+        UIDevice.currentDevice.batteryMonitoringEnabled = YES;
+        const char *every = getenv("LB_POWER_LOG_S");
+        double interval = every && atof(every) > 0 ? atof(every) : 10.0;
+        static dispatch_source_t power_timer;
+        power_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                             dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+        dispatch_source_set_timer(power_timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)),
+                                  (uint64_t)(interval * NSEC_PER_SEC), NSEC_PER_SEC / 10);
+        dispatch_source_set_event_handler(power_timer, ^{
+            static const char *states[] = {"unknown", "unplugged", "charging", "full"};
+            static double last_cpu, last_wall;
+            struct rusage use;
+            getrusage(RUSAGE_SELF, &use);
+            double cpu = use.ru_utime.tv_sec + use.ru_utime.tv_usec / 1e6 + use.ru_stime.tv_sec + use.ru_stime.tv_usec / 1e6;
+            double wall = CACurrentMediaTime();
+            double cores = last_wall > 0 && wall > last_wall ? (cpu - last_cpu) / (wall - last_wall) : 0;
+            last_cpu = cpu;
+            last_wall = wall;
+            UIDevice *device = UIDevice.currentDevice;
+            NSInteger st = device.batteryState, th = NSProcessInfo.processInfo.thermalState;
+            fprintf(stderr, "power: battery %.0f%% (%s), thermal %s, low power %d, cpu %.2f cores\n",
+                    device.batteryLevel * 100.0, st >= 0 && st < 4 ? states[st] : "?",
+                    th >= 0 && th < 4 ? thermal[th] : "unknown", NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0,
+                    cores);
+            fflush(stderr);
+            fsync(STDERR_FILENO);
+        });
+        dispatch_resume(power_timer);
 
         /* The game holds its frames while the launcher is inactive: iOS allows no GPU work in
          * the background, and Control Center or the app switcher also deactivate it. */

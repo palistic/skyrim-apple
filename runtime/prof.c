@@ -12,6 +12,7 @@
 #ifdef __APPLE__
 #include <sys/ucontext.h>
 #include <mach/mach.h>
+#include <TargetConditionals.h>
 #else
 #include <ucontext.h>
 #endif
@@ -90,6 +91,13 @@ void prof_start(void) {
     char path[1100];
     snprintf(path, sizeof path, "%s/noprof.txt", g_save_dir);
     if (access(path, F_OK) == 0) return;
+    /* LB_PROF=0 turns it off, LB_PROF=1 on. On visionOS it is off unless asked for: sampling briefly stops every
+     * running thread 200 times a second, which costs frame time and battery on the headset. */
+    const char *want = getenv("LB_PROF");
+    if (want && *want == '0') return;
+#if defined(__APPLE__) && TARGET_OS_VISION
+    if (!want || *want != '1') { LOG("profiler off on visionOS (LB_PROF=1 turns it on)"); return; }
+#endif
     g_samp = calloc(PROF_N, sizeof *g_samp);
     if (!g_samp) return;
 #if defined(__APPLE__) && defined(__aarch64__)
@@ -122,6 +130,33 @@ static int bin_cmp(const void *a, const void *b) {
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
+/* dladdr, cached per 256-byte block of code (code never moves): one lookup per block for the life of the process
+ * instead of one per sample per report, which cost about half a core during busy stretches. Watchdog thread
+ * only. A full cache falls back to calling dladdr. */
+typedef struct { uintptr_t block, key, base; const char *name; } SymCache;
+static void sym_of(uintptr_t pc, uintptr_t *key, const char **name, uintptr_t *base) {
+    enum { NC = 1 << 15 };
+    static SymCache *cache;
+    if (!cache) cache = calloc(NC, sizeof *cache);
+    uintptr_t block = pc & ~(uintptr_t)0xFF;
+    uint32_t h = (uint32_t)((block >> 8) * 2654435761u) & (NC - 1);
+    for (uint32_t probe = 0; cache && probe < 64; probe++, h = (h + 1) & (NC - 1)) {
+        if (cache[h].block == block) { *key = cache[h].key; *name = cache[h].name; *base = cache[h].base; return; }
+        if (!cache[h].block) break;
+    }
+    Dl_info di;
+    *key = 0; *name = "?"; *base = 0;
+    if (dladdr((void *)pc, &di)) {
+        // unexported code: bin by 256-byte block, printed as lib+offset
+        *key = di.dli_saddr ? (uintptr_t)di.dli_saddr : block;
+        *name = di.dli_sname ? di.dli_sname : di.dli_fname ? di.dli_fname : "?";
+        *base = di.dli_sname ? 0 : (uintptr_t)di.dli_fbase;
+    }
+    /* A function's symbol is cached per block, so a block spanning two functions is credited to the first one
+     * seen in it; at 256 bytes that blurs only neighbouring small functions. */
+    if (cache && !cache[h].block) cache[h] = (SymCache){block, *key, *base, *name};
+}
+
 /* Top functions among samples [start, end); main_only keeps the main thread's (Apple sampler). */
 static void prof_table(uint32_t start, uint32_t end, int main_only) {
     uint32_t total = 0;
@@ -137,16 +172,10 @@ static void prof_table(uint32_t start, uint32_t end, int main_only) {
         (void)main_only;
 #endif
         total++;
-        Dl_info di;
         uintptr_t key = 0;
         const char *name = "?";
         uintptr_t base = 0;
-        if (pc && dladdr((void *)pc, &di)) {
-            // unexported code: bin by 256-byte block, printed as lib+offset
-            key = di.dli_saddr ? (uintptr_t)di.dli_saddr : (pc & ~(uintptr_t)0xFF);
-            name = di.dli_sname ? di.dli_sname : di.dli_fname ? di.dli_fname : "?";
-            base = di.dli_sname ? 0 : (uintptr_t)di.dli_fbase;
-        }
+        if (pc) sym_of(pc, &key, &name, &base);
         uint32_t h = (uint32_t)((key >> 2) * 2654435761u) % NB;
         for (uint32_t probe = 0; probe < NB; probe++, h = (h + 1) % NB) {
             if (!bins[h].n) { bins[h].key = key; bins[h].name = name; bins[h].base = base; }

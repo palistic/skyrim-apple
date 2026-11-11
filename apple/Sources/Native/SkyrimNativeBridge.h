@@ -16,6 +16,14 @@ void skyrim_native_request_quit(void);
 /* SDL visionOS overlay (ipad/visionos/sdl): the UIWindowScene SDL's game window must attach to.
  * Pass Unmanaged.passUnretained(scene).toOpaque(); held weakly. Main thread. */
 void skyrim_sdl_set_game_scene(void *window_scene);
+/* 1 while immersive play runs: SDL's game window turns nearly invisible but keeps taking the trackpad. */
+void skyrim_sdl_set_window_ghost(int on);
+/* The game window's SwiftUI pointer surface (LB_GAME_SCENE): hover x from -1 to 1, and leaving it. Main thread. */
+void skyrim_xr_hover(float x);
+void skyrim_xr_hover_left(void);
+/* A pinch or trackpad click seen as a spatial event on the immersive layer: 1 down, 0 up. Ignored when GCMouse
+ * delivered the same press (runtime/platform_sdl.c). */
+void skyrim_spatial_click(int down);
 
 /* ipad/immersive_bridge.mm: the game's frames for the immersive compositor. */
 #include <stdint.h>
@@ -29,11 +37,20 @@ typedef struct skyrim_immersive_frame {
     uint32_t width;
     uint32_t height;
     void *depth_texture;     /* id<MTLTexture> (R32Float, D3D depth 0 near to 1 far) or NULL; same lifetime */
+    /* The game camera that rendered the frame (NiCamera, Skyrim units, Z up): rotation 3x3 row-major whose
+     * columns are forward, up, right; position; frustum tangents left, right, top, bottom; near; far. */
+    float camera[18];
+    int has_camera;
 } skyrim_immersive_frame;
 void skyrim_immersive_start(void);
 void skyrim_immersive_stop(void);
 int skyrim_immersive_acquire(skyrim_immersive_frame *out);
 void skyrim_immersive_release(void *state, uint32_t slot);
+/* runtime/platform_sdl.c head steering: the head's yaw (clockwise) and pitch (up) in radians relative to its
+ * starting direction, from the compositor thread; on = 0 stops steering. */
+void skyrim_head_set(float yaw, float pitch, int on);
+/* The game heading (radians, clockwise from north) that head yaw 0 maps to; *valid = 0 until steering anchors. */
+float skyrim_head_offset(int *valid);
 #endif
 
 #endif

@@ -4,12 +4,17 @@ import UniformTypeIdentifiers
 /// The single-title library screen shared by Mac, iPhone, iPad and Vision Pro. Compact iPhone
 /// layouts size the card to fit the screen; larger windows center the Dark Eco style card.
 struct LibraryView: View {
+    static let windowID = "library"
     @ObservedObject var model: LauncherModel
     @State private var showSettings = false
     @State private var picker: PickerRequest?
     @State private var confirmQuit = false
     #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    #endif
     #endif
 
     enum PickerRequest { case folder, artwork }
@@ -245,7 +250,7 @@ struct LibraryView: View {
             if model.primaryAction == .play && model.canPlay {
                 Button {
                     Task {
-                        if case .opened = await openImmersiveSpace(id: ImmersiveScreen.spaceID) { model.play() }
+                        if case .opened = await openImmersiveSpace(id: ImmersiveScreen.spaceID) { startPlay() }
                     }
                 } label: {
                     Label("Play Immersive", systemImage: "visionpro")
@@ -256,7 +261,7 @@ struct LibraryView: View {
                 .task {
                     guard LauncherModel.benchImmersive, !LauncherModel.benchImmersiveStarted else { return }
                     LauncherModel.benchImmersiveStarted = true
-                    if case .opened = await openImmersiveSpace(id: ImmersiveScreen.spaceID) { model.play() }
+                    if case .opened = await openImmersiveSpace(id: ImmersiveScreen.spaceID) { startPlay() }
                 }
             }
             #endif
@@ -277,6 +282,20 @@ struct LibraryView: View {
         return model.folderName == nil ? "tray" : "exclamationmark.circle"
     }
 
+    /// Starts the game: directly, or (LB_GAME_SCENE=1 on visionOS) by opening the game's own window, which starts
+    /// it once its scene is registered, and closing this one.
+    private func startPlay() {
+        #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+        if LauncherModel.gameSceneMode {
+            model.playWhenGameWindowReady = true
+            openWindow(id: GameSurfaceView.windowID)
+            dismissWindow(id: LibraryView.windowID)
+            return
+        }
+        #endif
+        model.play()
+    }
+
     private func primaryButton(compact: Bool) -> some View {
         let action = model.primaryAction
         let enabled: Bool = switch action {
@@ -288,7 +307,7 @@ struct LibraryView: View {
             switch action {
             case .chooseFolder: picker = .folder
             case .prepare: model.prepare()
-            case .play: model.play()
+            case .play: startPlay()
             case .busy, .running, .resume: break
             }
         } label: {

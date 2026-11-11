@@ -5,6 +5,8 @@
  * presenting threads while the game polls XInput from its own threads. */
 #include "rt.h"
 #include <SDL2/SDL.h>
+#include <math.h>
+#include <stdlib.h>
 #if defined(__APPLE__)
 #define INPUT_APPLE 1  /* macOS, iOS, iPadOS and the iPad Simulator */
 #else
@@ -196,6 +198,23 @@ void input_handle_event(const SDL_Event *e) {
     }
 }
 
+/* Head steering on a pad (runtime/platform_sdl.c head_steer): a right-stick deflection, -1..1, used while the
+ * real right stick is centred. While a pad is connected the game is in gamepad mode and ignores mouse look. */
+static volatile float g_head_rx, g_head_ry;
+static volatile int g_real_right_stick;  /* the real right stick was off centre at the last poll */
+void input_head_stick(float x, float y) { g_head_rx = x; g_head_ry = y; }
+int input_right_stick_moved(void) { return g_real_right_stick; }
+int input_pad_connected(void) {
+#if INPUT_APPLE
+    pthread_mutex_lock(&g_pad_lock);
+    int c = connected(0);
+    pthread_mutex_unlock(&g_pad_lock);
+    return c;
+#else
+    return g_pads[0] != NULL;
+#endif
+}
+
 static void fill_state(int idx, uint32_t g) {
     uint16_t b = 0;
     uint8_t lt = 0, rt = 0;
@@ -229,6 +248,11 @@ static void fill_state(int idx, uint32_t g) {
         if (g_virt.rt) rt = g_virt.rt;
         if (g_virt.lx || g_virt.ly) { lx = g_virt.lx; ly = g_virt.ly; }
         if (g_virt.rx || g_virt.ry) { rx = g_virt.rx; ry = g_virt.ry; }
+        g_real_right_stick = abs(rx) > 8000 || abs(ry) > 8000;
+        if (!g_real_right_stick && (g_head_rx != 0 || g_head_ry != 0)) {
+            rx = (int16_t)(fmaxf(-1.0f, fminf(1.0f, g_head_rx)) * 32767.0f);
+            ry = (int16_t)(fmaxf(-1.0f, fminf(1.0f, g_head_ry)) * 32767.0f);
+        }
     }
     { /* a new packet number whenever the reported state changes */
         static uint16_t last_b[4];

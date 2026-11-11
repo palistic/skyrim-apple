@@ -1,0 +1,242 @@
+{
+  "description": "Settings sweep: whiterun-market-mac at the veryhigh preset at 1280x720 (LB_PRESET picks the install's preset INI each launch). Route and frames as whiterun-market-mac.",
+  "console_at": 600,
+  "console": [
+    "coc whiterunorigin"
+  ],
+  "console_close": false,
+  "keys": [
+    {
+      "key": "W",
+      "start": 2400,
+      "frames": 550
+    },
+    {
+      "key": "L",
+      "start": 3000,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3030,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3060,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3090,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3120,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3150,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3180,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3210,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3240,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3270,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3300,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3330,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3360,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3390,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3420,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3450,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3480,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3510,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3540,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3570,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3600,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3630,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3660,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3690,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3720,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3750,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3780,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3810,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3840,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3870,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3900,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3930,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3960,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 3990,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 4020,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 4050,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 4080,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 4110,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 4140,
+      "frames": 4
+    },
+    {
+      "key": "L",
+      "start": 4170,
+      "frames": 4
+    }
+  ],
+  "phases": {
+    "idle": [
+      1800,
+      2400
+    ],
+    "run": [
+      2400,
+      2950
+    ],
+    "pan": [
+      3000,
+      4200
+    ]
+  },
+  "shots": [
+    2390,
+    2700,
+    2940,
+    3300,
+    3600,
+    3900,
+    4190
+  ],
+  "exit_frame": 4300,
+  "env": {
+    "LB_PRESET": "veryhigh"
+  }
+}

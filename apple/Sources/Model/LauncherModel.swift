@@ -385,6 +385,21 @@ final class LauncherModel: ObservableObject {
 
     // MARK: Session
 
+    #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+    /// LB_GAME_SCENE=1 in Documents/SkyrimNative/launch-env.json: the game plays in its own window, which is also the
+    /// trackpad's pointer surface, and the launcher window closes (docs/VISIONOS_POINTER_PLAN.md). Read at Play,
+    /// before the runtime applies the same file.
+    static var gameSceneMode: Bool {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SkyrimNative/launch-env.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return (json["LB_GAME_SCENE"] as? String) == "1"
+    }
+    /// Set when Play opened the game window; the window starts the game once it has registered its scene.
+    @Published var playWhenGameWindowReady = false
+    #endif
+
     func play() {
         guard canPlay, session == .idle else { return }
         #if os(macOS)
