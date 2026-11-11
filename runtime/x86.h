@@ -44,7 +44,15 @@ typedef struct CPU {
     void *thread;
 } CPU;
 
+/* LB_CONST_MEM (generated code only): the guest base is set once in main() before any guest code runs.
+ * Declared const there, the compiler loads it once per function; otherwise, under -fno-strict-aliasing, every
+ * guest store may alias it and each later access reloads it. The runtime keeps the writable declaration, and
+ * its definition (main.c) must never see this one. */
+#ifdef LB_CONST_MEM
+extern uint8_t *const MEM;
+#else
 extern uint8_t *MEM;
+#endif
 
 typedef uint32_t __attribute__((aligned(1), may_alias)) u32u;
 typedef uint16_t __attribute__((aligned(1), may_alias)) u16u;
