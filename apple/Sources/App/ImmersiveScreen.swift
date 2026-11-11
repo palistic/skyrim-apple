@@ -17,7 +17,17 @@ struct ImmersiveScreenConfiguration: CompositorLayerConfiguration {
         configuration.colorFormat = .bgra8Unorm_srgb
         configuration.depthFormat = .depth32Float
         configuration.layout = .dedicated
-        configuration.isFoveationEnabled = false
+        // LB_FOVEATION=1: the system's eye-tracked foveation (rasterization rate maps on each eye's pass). Read
+        // from launch-env.json directly: the layer is configured before the runtime applies that file.
+        configuration.isFoveationEnabled = Self.foveation && capabilities.supportsFoveation
+    }
+
+    static var foveation: Bool {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("SkyrimNative/launch-env.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return (json["LB_FOVEATION"] as? String) == "1"
     }
 }
 
@@ -282,7 +292,7 @@ final class ImmersiveCompositor: @unchecked Sendable {
         Task { [session, tracking] in
             do { try await session.run([tracking]) } catch { fputs("immersive: no world tracking: \(error)\n", stderr) }
         }
-        log("layer \(layer.configuration.colorFormat.rawValue), started")
+        log("layer \(layer.configuration.colorFormat.rawValue), foveation \(layer.configuration.isFoveationEnabled ? "on" : "off"), started")
         while true {
             switch layer.state {
             case .invalidated:
@@ -438,6 +448,8 @@ final class ImmersiveCompositor: @unchecked Sendable {
                 pass.depthAttachment.loadAction = .clear
                 pass.depthAttachment.clearDepth = 0
                 pass.depthAttachment.storeAction = .store
+                let rateMaps = drawable.rasterizationRateMaps
+                if !rateMaps.isEmpty { pass.rasterizationRateMap = rateMaps[min(index, rateMaps.count - 1)] }
                 guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { continue }
                 encoder.setViewport(view.textureMap.viewport)
                 if let texture, let model, let pipeline, let depth {
