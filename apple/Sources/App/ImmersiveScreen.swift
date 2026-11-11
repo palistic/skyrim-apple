@@ -103,7 +103,7 @@ final class ImmersiveCompositor: @unchecked Sendable {
     // Two triangles per grid cell, unindexed, so each vertex knows its whole triangle. With depth, each vertex moves
     // along the ray from the viewer's starting eye through its point on the screen, by how far that pixel is in the
     // game. A triangle spanning a depth jump (an object's edge against what is behind it) is dropped instead of
-    // stretched into streaks; the backplate pass, the same image pushed to the farthest depth, shows through the gap.
+    // stretched into streaks (see below). The backplate path (u.backplate) is no longer drawn.
     vertex Out screen_vertex(uint id [[vertex_id]], constant Uniforms &u [[buffer(0)]],
                              texture2d<float> depth [[texture(1)]]) {
         const uint2 corners[6] = { uint2(0, 0), uint2(1, 0), uint2(0, 1), uint2(1, 0), uint2(1, 1), uint2(0, 1) };
@@ -129,11 +129,13 @@ final class ImmersiveCompositor: @unchecked Sendable {
             float r0 = radial(c0, length(screen_point(c0, u) - eye), u, depth);
             float r1 = radial(c1, length(screen_point(c1, u) - eye), u, depth);
             float r2 = radial(c2, length(screen_point(c2, u) - eye), u, depth);
-            if (max(r0, max(r1, r2)) > min(r0, min(r1, r2)) * (1.0 + u.tear)) {
-                out.position = float4(0, 0, 0, 1);  // same point for all three corners: no area, nothing drawn
-                return out;
-            }
             float r = corner == first ? r0 : (corner == first + 1 ? r1 : r2);
+            // A triangle spanning a depth edge is laid flat at its farthest corner's distance instead of being
+            // stretched across the gap: the gap shows at most one cell of the edge at the background's depth. (A
+            // far backplate behind dropped triangles showed whole second copies of near objects - "two heads" -
+            // once the head moved away from where the rays start.)
+            float rFar = max(r0, max(r1, r2));
+            if (rFar > min(r0, min(r1, r2)) * (1.0 + u.tear)) r = rFar;
             float fade = u.trueDepth != 0 ? 1.0 : edge_fade(uv);
             p = eye + ray * (1.0 + (r - toScreen) * fade / toScreen);
         }
@@ -429,13 +431,6 @@ final class ImmersiveCompositor: @unchecked Sendable {
                     encoder.setFragmentTexture(texture, index: 0)
                     encoder.setVertexTexture(useDepth ? depthTexture : texture, index: 1)
                     let vertexCount = Int((Self.gridColumns - 1) * (Self.gridRows - 1) * 6)
-                    if useDepth {
-                        var back = uniforms
-                        back.backplate = 1
-                        encoder.setVertexBytes(&back, length: MemoryLayout<QuadUniforms>.stride, index: 0)
-                        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertexCount)
-                        encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 0)
-                    }
                     encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertexCount)
                 }
                 encoder.endEncoding()
