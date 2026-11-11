@@ -1,5 +1,6 @@
 #include "d3d9_swapchain.h"
 #include <cstdio>
+#include <cstdlib>
 #include <chrono>
 #include "d3d9_surface.h"
 #include "d3d9_monitor.h"
@@ -284,7 +285,12 @@ namespace dxvk {
       frames++;
       auto now = dxvk::high_resolution_clock::now();
       uint64_t us = std::chrono::duration_cast<std::chrono::microseconds>(now - lastTime).count();
-      if (us >= 10'000'000) {
+      static uint64_t every_us = 0;
+      if (!every_us) {
+        const char* e = std::getenv("LB_POWER_LOG_S");
+        every_us = e && std::atof(e) > 0 ? uint64_t(std::atof(e) * 1e6) : 10'000'000;
+      }
+      if (us >= every_us) {
         uint64_t idle = m_device->getStatCounters().getCtr(DxvkStatCounter::GpuIdleTicks);
         uint64_t idleDiff = idle - lastIdle;
         double busy = us > idleDiff ? double(us - idleDiff) / double(us) : 0.0;
