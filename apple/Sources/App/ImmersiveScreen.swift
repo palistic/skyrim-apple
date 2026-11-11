@@ -21,6 +21,25 @@ struct ImmersiveScreenConfiguration: CompositorLayerConfiguration {
     }
 }
 
+/// Spatial events seen on the immersive layer, by kind and phase; logged by the compositor and cleared.
+extension Notification.Name {
+    /// Posted on the main queue with the immersive layer's start (object true) and end (false).
+    static let skyrimImmersiveRunning = Notification.Name("SkyrimImmersiveRunning")
+}
+
+enum SpatialEventLog {
+    nonisolated(unsafe) private static var counts: [String: Int] = [:]
+    private static let lock = NSLock()
+    static func note(kind: String, phase: String) {
+        lock.lock(); counts["\(kind)/\(phase)", default: 0] += 1; lock.unlock()
+    }
+    static func take() -> String? {
+        lock.lock(); defer { counts = [:]; lock.unlock() }
+        guard !counts.isEmpty else { return nil }
+        return counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+    }
+}
+
 private struct QuadUniforms {
     var viewProjection: simd_float4x4
     var model: simd_float4x4
@@ -243,6 +262,8 @@ final class ImmersiveCompositor: @unchecked Sendable {
             return
         }
         skyrim_immersive_start()
+        skyrim_sdl_set_window_ghost(1)
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .skyrimImmersiveRunning, object: true) }
         Task { [session, tracking] in
             do { try await session.run([tracking]) } catch { fputs("immersive: no world tracking: \(error)\n", stderr) }
         }
@@ -267,6 +288,8 @@ final class ImmersiveCompositor: @unchecked Sendable {
     private lazy var headDepthScale: Float = getenv("LB_IMMERSIVE_HEAD_SCALE").flatMap { Float(String(cString: $0)) } ?? 1.0
 
     private func finish() {
+        skyrim_sdl_set_window_ghost(0)
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .skyrimImmersiveRunning, object: false) }
         if headMode { skyrim_head_set(0, 0, 0) }
         lastCommands?.waitUntilCompleted()
         skyrim_immersive_stop()
@@ -447,6 +470,7 @@ final class ImmersiveCompositor: @unchecked Sendable {
         let now = CACurrentMediaTime()
         if now - loggedAt >= 5 {
             log(String(format: "%.0f Hz presented, %.0f fps from the game", Double(presented) / (now - loggedAt), Double(newFrames) / (now - loggedAt)))
+            if let spatial = SpatialEventLog.take() { log("spatial events: \(spatial)") }
             presented = 0
             newFrames = 0
             loggedAt = now

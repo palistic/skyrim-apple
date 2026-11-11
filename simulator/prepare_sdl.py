@@ -123,6 +123,12 @@ def apply_visionos(output):
         "#if (__IPHONE_OS_VERSION_MAX_ALLOWED >= 140000) || (__APPLETV_OS_VERSION_MAX_ALLOWED >= 140000) || (__MAC_OS_VERSION_MAX_ALLOWED > 1500000) || TARGET_OS_VISION"),
         "        if (SDL_GCMouseRelativeMode()) {\n            SDL_SendMouseMotion(SDL_GetMouseFocus(), mouseID, 1, (int)deltaX, -(int)deltaY);",
         "#if TARGET_OS_VISION\n        SDLXR_MouseDelta();\n#endif\n        if (SDL_GCMouseRelativeMode()) {\n            SDL_SendMouseMotion(SDL_GetMouseFocus(), mouseID, 1, (int)deltaX, -(int)deltaY);"))
+    text2=events.read_text()
+    text2=replace_once(text2,"    SDL_SendMouseButton(SDL_GetMouseFocus(), mouseID, pressed ? SDL_PRESSED : SDL_RELEASED, button);",
+        "#if TARGET_OS_VISION\n    SDLXR_MouseButton(pressed ? 1 : 0);\n#endif\n    SDL_SendMouseButton(SDL_GetMouseFocus(), mouseID, pressed ? SDL_PRESSED : SDL_RELEASED, button);")
+    text2=replace_once(text2,"        SDL_SendMouseWheel(SDL_GetMouseFocus(), mouseID, horizontal, vertical, mouse_scroll_direction);",
+        "#if TARGET_OS_VISION\n        SDLXR_MouseScroll();\n#endif\n        SDL_SendMouseWheel(SDL_GetMouseFocus(), mouseID, horizontal, vertical, mouse_scroll_direction);")
+    events.write_text(text2)
     changed.setdefault(str(events.relative_to(output)),text)
     return changed
 

@@ -16,6 +16,8 @@ void skyrim_native_request_quit(void);
 /* SDL visionOS overlay (ipad/visionos/sdl): the UIWindowScene SDL's game window must attach to.
  * Pass Unmanaged.passUnretained(scene).toOpaque(); held weakly. Main thread. */
 void skyrim_sdl_set_game_scene(void *window_scene);
+/* 1 while immersive play runs: SDL's game window turns nearly invisible but keeps taking the trackpad. */
+void skyrim_sdl_set_window_ghost(int on);
 
 /* ipad/immersive_bridge.mm: the game's frames for the immersive compositor. */
 #include <stdint.h>
