@@ -99,6 +99,12 @@ file(GLOB GAME_C CONFIGURE_DEPENDS "${SKYRIM_GEN_DIR}/*.c")
 add_library(skyrim_ipad_generated OBJECT ${GAME_C})
 target_include_directories(skyrim_ipad_generated PRIVATE "${SKYRIM_ROOT}/runtime" "${SKYRIM_GEN_DIR}")
 target_compile_definitions(skyrim_ipad_generated PRIVATE GAME_SKYRIM LB_STRICT_ORDER)
+# The guest base pointer never changes after startup; telling the generated code so removes its reloads.
+# -DLB_CONST_MEM=OFF builds the old way for an A/B.
+option(LB_CONST_MEM "Generated code treats the guest base pointer as a constant" ON)
+if(LB_CONST_MEM)
+  target_compile_definitions(skyrim_ipad_generated PRIVATE LB_CONST_MEM)
+endif()
 target_compile_options(skyrim_ipad_generated PRIVATE -O2 -g0 -fno-strict-aliasing -fwrapv -fsigned-char)
 set_property(GLOBAL PROPERTY JOB_POOLS generated_compile=2)
 set_property(TARGET skyrim_ipad_generated PROPERTY JOB_POOL_COMPILE generated_compile)
