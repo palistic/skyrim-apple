@@ -399,10 +399,16 @@ static void *thread_main(void *arg) {
     while (t->suspended) pthread_cond_wait(&g_wcond, &g_wlock);
     pthread_mutex_unlock(&g_wlock);
 #if defined(__APPLE__)
-    if (t->qos_set) {
+    /* LB_QOS=2: every game thread user-interactive from its start (in the boss fight two job threads each run
+     * lifted code at about two thirds of a core, as much as the main thread; keep them off efficiency cores). */
+    if (getenv("LB_QOS") && *getenv("LB_QOS") == '2') {
+        int r = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        LOG("qos: thread %u user-interactive (%d)", t->tid, r);
+    } else if (t->qos_set) {
         extern int kernel32_apply_qos(int prio);
         int r = kernel32_apply_qos(t->qos_prio);
-        LOG("qos: thread %u starts at priority %d (%d)", t->tid, t->qos_prio, r);
+        extern unsigned kernel32_qos_class(int prio);
+        LOG("qos: thread %u starts at priority %d, class %x (%d)", t->tid, t->qos_prio, kernel32_qos_class(t->qos_prio), r);
     }
 #endif
     uint32_t args[1] = {t->param};
@@ -467,18 +473,22 @@ SHIM(GetCurrentProcess) { RET(0xFFFFFFFFu, 0); }
 #include <pthread/qos.h>
 static int qos_on(void) {
     static int on = -1;
-    if (on < 0) on = getenv("LB_QOS") && *getenv("LB_QOS") == '1';
+    if (on < 0) on = getenv("LB_QOS") && (*getenv("LB_QOS") == '1' || *getenv("LB_QOS") == '3');  /* 2: see thread_main */
     return on;
 }
 static qos_class_t qos_of(int32_t prio) {
     if (prio >= 2) return QOS_CLASS_USER_INTERACTIVE;   /* HIGHEST, TIME_CRITICAL */
     if (prio >= 0) return QOS_CLASS_USER_INITIATED;     /* NORMAL, ABOVE_NORMAL */
+    /* LB_QOS=3: the same mapping, but nothing below user-initiated, in case a job thread the game marks below
+     * normal carries real load (it does in the boss fight) and would otherwise land on efficiency cores. */
+    if (getenv("LB_QOS")[0] == '3') return QOS_CLASS_USER_INITIATED;
     if (prio >= -2) return QOS_CLASS_UTILITY;           /* BELOW_NORMAL, LOWEST */
     return QOS_CLASS_BACKGROUND;                        /* IDLE */
 }
 #endif
 #if defined(__APPLE__)
 int kernel32_apply_qos(int prio) { return pthread_set_qos_class_self_np(qos_of(prio), 0); }
+unsigned kernel32_qos_class(int prio) { return (unsigned)qos_of(prio); }
 #endif
 SHIM(SetThreadPriority) {
 #if defined(__APPLE__)

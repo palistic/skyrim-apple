@@ -308,12 +308,58 @@ static void route(Voice *v, const float *in, int frames) {
             float g = v->volume * v->chvol[s];
             for (int dc = 0; dc < d->in_ch; dc++) m[dc * v->in_ch + s] *= g;
         }
-        for (int f = 0; f < frames; f++)
-            for (int dc = 0; dc < d->in_ch; dc++) {
-                float sum = 0;
-                for (int s = 0; s < v->in_ch; s++) sum += m[dc * v->in_ch + s] * in[f * v->in_ch + s];
-                d->acc[f * d->in_ch + dc] += sum;
+        /* Mono and stereo sources into a stereo destination are nearly every voice: unrolled, with the same
+         * operations in the same order as the general loop (sum = 0 + m*in, then + m*in), so output is bit-exact. */
+        float *acc = d->acc;
+        /* LB_AUDIO_CHECK=1: also run the general loop on a copy and count any differing sample (debug only). */
+        static int check = -1;
+        static float *ref;
+        static uint64_t checked, differed;
+        if (check < 0) check = getenv("LB_AUDIO_CHECK") && *getenv("LB_AUDIO_CHECK") == '1';
+        int fast = d->in_ch == 2 && (v->in_ch == 1 || v->in_ch == 2);
+        if (check && fast) {
+            if (!ref) ref = malloc(sizeof(float) * 2 * 48000);
+            if (ref && frames <= 48000) {
+                memcpy(ref, acc, sizeof(float) * 2 * (size_t)frames);
+                for (int f = 0; f < frames; f++)
+                    for (int dc = 0; dc < 2; dc++) {
+                        float sum = 0;
+                        for (int s = 0; s < v->in_ch; s++) sum += m[dc * v->in_ch + s] * in[f * v->in_ch + s];
+                        ref[f * 2 + dc] += sum;
+                    }
             }
+        }
+        if (d->in_ch == 2 && v->in_ch == 1) {
+            const float m0 = m[0], m1 = m[1];
+            for (int f = 0; f < frames; f++) {
+                float x = in[f];
+                acc[2 * f] += 0.0f + m0 * x;
+                acc[2 * f + 1] += 0.0f + m1 * x;
+            }
+        } else if (d->in_ch == 2 && v->in_ch == 2) {
+            const float m00 = m[0], m01 = m[1], m10 = m[2], m11 = m[3];
+            for (int f = 0; f < frames; f++) {
+                float l = in[2 * f], r = in[2 * f + 1];
+                acc[2 * f] += (0.0f + m00 * l) + m01 * r;
+                acc[2 * f + 1] += (0.0f + m10 * l) + m11 * r;
+            }
+        } else {
+            for (int f = 0; f < frames; f++)
+                for (int dc = 0; dc < d->in_ch; dc++) {
+                    float sum = 0;
+                    for (int s = 0; s < v->in_ch; s++) sum += m[dc * v->in_ch + s] * in[f * v->in_ch + s];
+                    acc[f * d->in_ch + dc] += sum;
+                }
+        }
+        if (check && fast && ref && frames <= 48000) {
+            for (int k = 0; k < 2 * frames; k++) {
+                checked++;
+                if (memcmp(&ref[k], &acc[k], sizeof(float))) differed++;
+            }
+            if ((checked & ~(uint64_t)0xFFFFF) != ((checked - 2 * (uint64_t)frames) & ~(uint64_t)0xFFFFF))
+                LOG("xaudio2 check: %llu samples compared, %llu differ", (unsigned long long)checked,
+                    (unsigned long long)differed);
+        }
     }
 }
 
@@ -325,6 +371,19 @@ static void mix_source(Voice *v, int frames, float *tmp) {
         memcpy(v->prev, v->cur, sizeof v->prev);
         v->primed = 1;
         v->frac = 0;
+    }
+    /* Nothing queued and both interpolation frames silent: the output would be all zeros, and the voice's state
+     * only advances its phase. Advance the phase exactly as the loop below would and skip the mixing. */
+    if (!v->qn) {
+        int silent = 1;
+        for (int c = 0; c < ch; c++) silent &= v->prev[c] == 0.0f && v->cur[c] == 0.0f;
+        if (silent) {
+            for (int f = 0; f < frames; f++) {
+                v->frac += step;
+                while (v->frac >= 1.0) v->frac -= 1.0;
+            }
+            return;
+        }
     }
     for (int f = 0; f < frames; f++) {
         for (int c = 0; c < ch; c++) tmp[f * ch + c] = v->prev[c] + (v->cur[c] - v->prev[c]) * (float)v->frac;

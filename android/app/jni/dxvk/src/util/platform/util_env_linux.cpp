@@ -43,7 +43,7 @@ namespace dxvk::env {
     // Skyrim Apple port: LB_QOS=1 puts DXVK's frame-critical threads (command stream, submission, queue) in the
     // user-interactive QoS class, so the scheduler keeps them on performance cores; others stay as they are.
     const char* qos = std::getenv("LB_QOS");
-    if (qos && qos[0] == '1' && (name == "dxvk-cs" || name == "dxvk-submit" || name == "dxvk-queue")) {
+    if (qos && (qos[0] >= '1' && qos[0] <= '3') && (name == "dxvk-cs" || name == "dxvk-submit" || name == "dxvk-queue")) {
       int r = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
       std::fprintf(stderr, "qos: %s user-interactive (%d)\n", name.c_str(), r);
     }

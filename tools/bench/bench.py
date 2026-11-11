@@ -140,6 +140,17 @@ class Device:
         except subprocess.TimeoutExpired as expired:
             return (expired.stdout or b"").decode(errors="replace") + "\nbench: launch timed out\n"
 
+    def place_game_file(self, name, text):
+        """Writes a small text file into the game folder (Documents/Skyrim), e.g. a console batch file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / name
+            local.write_text(text)
+            done = self.devicectl("device", "copy", "to", "--device", self.udid, "--domain-type", "appDataContainer",
+                                  "--domain-identifier", BUNDLE, "--source", str(local),
+                                  "--destination", f"Documents/Skyrim/{name}")
+            if done.returncode != 0:
+                fail(f"couldn't place {name} in the game folder: {done.stderr.strip()[-500:]}")
+
     def list_files(self, folder):
         out = self.devicectl("device", "info", "files", "--device", self.udid, "--domain-type", "appDataContainer",
                              "--domain-identifier", BUNDLE, "--subdirectory", folder).stdout
@@ -320,6 +331,15 @@ def execute(scenario, args):
     for item in args.env:
         key, _, value = item.partition("=")
         env[key] = value
+    # "game_files": {name: [lines]} - small files the scenario needs in the game folder (a `bat` batch file).
+    for name, lines in scenario.get("game_files", {}).items():
+        text = "\n".join(lines) + "\n"
+        if hasattr(target, "place_game_file"):
+            target.place_game_file(name, text)
+        elif hasattr(target, "game"):
+            path = Path(target.game) / name
+            if not path.exists() or path.read_text() != text:
+                path.write_text(text)
     before = set(target.list_files("Documents/SkyrimLogs"))
     timeout = scenario["exit_frame"] / 20 + 240  # a third of real time, plus loading
     started = datetime.now(timezone.utc)

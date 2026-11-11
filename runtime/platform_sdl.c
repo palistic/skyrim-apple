@@ -423,7 +423,7 @@ static void native_hold_frames(void) {
 void platform_init(void) {
 #if defined(__APPLE__)
     /* LB_QOS=1: the game's main thread (it also presents) in the user-interactive QoS class; see kernel32.c. */
-    if (getenv("LB_QOS") && *getenv("LB_QOS") == '1') {
+    if (getenv("LB_QOS") && (*getenv("LB_QOS") >= '1' && *getenv("LB_QOS") <= '3')) {
         int r = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
         LOG("qos: main thread user-interactive (%d)", r);
     }
