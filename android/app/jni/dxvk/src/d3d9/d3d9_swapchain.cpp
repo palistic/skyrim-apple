@@ -1,4 +1,6 @@
 #include "d3d9_swapchain.h"
+#include <cstdio>
+#include <chrono>
 #include "d3d9_surface.h"
 #include "d3d9_monitor.h"
 
@@ -271,6 +273,30 @@ namespace dxvk {
     const RGNDATA* pDirtyRegion,
           DWORD    dwFlags) {
     D3D9DeviceLock lock = m_parent->LockDevice();
+
+#ifdef __APPLE__
+    // Skyrim Apple port: GPU load for the device log every ~10 s, from DXVK's own GPU idle counter (the time its
+    // submission queue waited on fences with nothing else to do), as the HUD's gpuload item computes it.
+    {
+      static auto     lastTime  = dxvk::high_resolution_clock::now();
+      static uint64_t lastIdle  = 0;
+      static uint32_t frames    = 0;
+      frames++;
+      auto now = dxvk::high_resolution_clock::now();
+      uint64_t us = std::chrono::duration_cast<std::chrono::microseconds>(now - lastTime).count();
+      if (us >= 10'000'000) {
+        uint64_t idle = m_device->getStatCounters().getCtr(DxvkStatCounter::GpuIdleTicks);
+        uint64_t idleDiff = idle - lastIdle;
+        double busy = us > idleDiff ? double(us - idleDiff) / double(us) : 0.0;
+        if (lastIdle)
+          std::fprintf(stderr, "dxvk: gpu busy %.0f%%, %.1f ms per frame over %u frames (%.0f fps)\n",
+            busy * 100.0, busy * double(us) / 1000.0 / frames, frames, frames * 1e6 / double(us));
+        lastIdle = idle;
+        lastTime = now;
+        frames = 0;
+      }
+    }
+#endif
 
     uint32_t presentInterval = m_presentParams.PresentationInterval;
 

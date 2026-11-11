@@ -234,6 +234,23 @@ extern "C" int skyrim_native_run(const char *save_root, char *error, size_t erro
             fprintf(stderr, "native: thermal %s\n", now >= 0 && now < 4 ? thermal[now] : "unknown");
         }];
 
+        /* Battery and thermal state every 10 s, for battery %/hour on the headset. visionOS may or may not report
+         * the external battery here; -1 means unknown. */
+        UIDevice.currentDevice.batteryMonitoringEnabled = YES;
+        static dispatch_source_t power_timer;
+        power_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_timer(power_timer, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), 10 * NSEC_PER_SEC,
+                                  NSEC_PER_SEC);
+        dispatch_source_set_event_handler(power_timer, ^{
+            static const char *states[] = {"unknown", "unplugged", "charging", "full"};
+            UIDevice *device = UIDevice.currentDevice;
+            NSInteger st = device.batteryState, th = NSProcessInfo.processInfo.thermalState;
+            fprintf(stderr, "power: battery %.0f%% (%s), thermal %s, low power %d\n", device.batteryLevel * 100.0,
+                    st >= 0 && st < 4 ? states[st] : "?", th >= 0 && th < 4 ? thermal[th] : "unknown",
+                    NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0);
+        });
+        dispatch_resume(power_timer);
+
         /* The game holds its frames while the launcher is inactive: iOS allows no GPU work in
          * the background, and Control Center or the app switcher also deactivate it. */
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;

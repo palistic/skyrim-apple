@@ -27,6 +27,19 @@ extension Notification.Name {
     static let skyrimImmersiveRunning = Notification.Name("SkyrimImmersiveRunning")
 }
 
+final class GPUTimeTally: @unchecked Sendable {
+    private let lock = NSLock()
+    private var total = 0.0, count = 0
+    func add(_ seconds: Double) {
+        guard seconds > 0, seconds < 1 else { return }
+        lock.lock(); total += seconds; count += 1; lock.unlock()
+    }
+    func take() -> (total: Double, count: Int) {
+        lock.lock(); defer { total = 0; count = 0; lock.unlock() }
+        return (total, count)
+    }
+}
+
 enum SpatialEventLog {
     nonisolated(unsafe) private static var counts: [String: Int] = [:]
     private static let lock = NSLock()
@@ -185,6 +198,8 @@ final class ImmersiveCompositor: @unchecked Sendable {
     private var lastCommands: (any MTLCommandBuffer)?
     private var checkedDevice = false
     private var presented = 0, newFrames = 0, loggedAt = CACurrentMediaTime()
+    /// The compositor's own GPU time per frame (its command buffers' GPU start to end), for the log.
+    private let gpuTime = GPUTimeTally()
     /// Grid size: one vertex every 4 game pixels.
     private static let gridColumns: UInt32 = 321, gridRows: UInt32 = 181
     private var depthSettings: (scale: Float, maxBehind: Float, near: Float, units: Float, tear: Float, on: Bool)?
@@ -460,7 +475,10 @@ final class ImmersiveCompositor: @unchecked Sendable {
             }
             drawable.encodePresent(commandBuffer: commands)
         }
-        commands.addCompletedHandler { _ in giveBack() }
+        commands.addCompletedHandler { [gpuTime] buffer in
+            gpuTime.add(buffer.gpuEndTime - buffer.gpuStartTime)
+            giveBack()
+        }
         commands.commit()
         lastCommands = commands
         frame.endSubmission()
@@ -471,6 +489,8 @@ final class ImmersiveCompositor: @unchecked Sendable {
         if now - loggedAt >= 5 {
             log(String(format: "%.0f Hz presented, %.0f fps from the game", Double(presented) / (now - loggedAt), Double(newFrames) / (now - loggedAt)))
             if let spatial = SpatialEventLog.take() { log("spatial events: \(spatial)") }
+            let gpu = gpuTime.take()
+            if gpu.count > 0 { log(String(format: "compositor gpu %.2f ms per frame", gpu.total * 1000 / Double(gpu.count))) }
             presented = 0
             newFrames = 0
             loggedAt = now
