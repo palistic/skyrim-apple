@@ -224,18 +224,23 @@ HARNESS = r'''
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <setjmp.h>
+#include <signal.h>
 #include "x86.h"
 uint8_t *MEM;
-static jmp_buf g_jb; static const char *g_why;
-void rt_call(CPU *c, uint32_t t) { (void)c; (void)t; g_why = "rt_call"; longjmp(g_jb, 1); }
-void rt_unimpl(CPU *c, uint32_t a, const char *w) { (void)c; (void)a; g_why = w; longjmp(g_jb, 1); }
-void rt_int3(CPU *c, uint32_t a) { (void)c; (void)a; g_why = "int3"; longjmp(g_jb, 1); }
+static sigjmp_buf g_jb; static const char *g_why;
+void rt_call(CPU *c, uint32_t t) { (void)c; (void)t; g_why = "rt_call"; siglongjmp(g_jb, 1); }
+void rt_unimpl(CPU *c, uint32_t a, const char *w) { (void)c; (void)a; g_why = w; siglongjmp(g_jb, 1); }
+void rt_int3(CPU *c, uint32_t a) { (void)c; (void)a; g_why = "int3"; siglongjmp(g_jb, 1); }
 void rt_cpuid(CPU *c, uint32_t *a, uint32_t *b, uint32_t *cc, uint32_t *d) { (void)c; *a = *b = *cc = *d = 0; }
 uint64_t rt_rdtsc(void) { return 0; }
-jmp_buf *rt_setjmp_slot(CPU *c, uint32_t g) { (void)c; (void)g; return &g_jb; }
+jmp_buf *rt_setjmp_slot(CPU *c, uint32_t g) { static jmp_buf jb; (void)c; (void)g; return &jb; }
 void rt_setjmp3(CPU *c) { (void)c; }
 #include "tests.inc"
+/* A fault inside one test (on macOS, an atomic access to an unaligned address raises SIGBUS) is that test's
+ * result, not the end of the run. */
+static void on_fault(int sig) { g_why = sig == SIGBUS ? "SIGBUS" : "SIGSEGV"; siglongjmp(g_jb, 1); }
 int main(int argc, char **argv) {
+    signal(SIGBUS, on_fault); signal(SIGSEGV, on_fault);
     MEM = mmap(NULL, 1ull << 32, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     FILE *f = fopen(argv[1], "rb");
     uint32_t n, npages; fread(&n, 4, 1, f); fread(&npages, 4, 1, f);
@@ -253,7 +258,7 @@ int main(int argc, char **argv) {
         CPU c; memset(&c, 0, sizeof c); memcpy(c.r, regs, 32); c.fpu_cw = 0x27F; c.mxcsr = 0x1F80;
         printf("T %u", id);
         g_why = NULL;
-        if (setjmp(g_jb)) { printf(" TRAP %s\n", g_why); continue; }
+        if (sigsetjmp(g_jb, 1)) { printf(" TRAP %s\n", g_why); continue; }
         g_tests[id](&c);
         for (int r = 0; r < 8; r++) printf(" %08x", r == 4 ? c.r[r] - 4 : c.r[r]);
         printf(" |");

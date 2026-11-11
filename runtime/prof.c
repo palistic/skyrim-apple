@@ -25,6 +25,48 @@ static volatile uint32_t g_samp_n;
 static uint32_t g_samp_done;
 static int g_prof_on;
 
+#ifdef __APPLE__
+/* Apple platforms: SIGPROF is delivered to whichever thread the kernel picks, in practice one entering or
+ * leaving a system call, so its samples said the game spent half its time in pthread_cond_signal when a real
+ * stack sample showed about 1%. Sample from a thread of our own instead: every 5 ms, read the program counter
+ * of each thread that is on a core right now. The top bit of a sample marks the main thread, which gets its
+ * own table in the report, since that thread is the frame. */
+#include <pthread.h>
+#define PROF_MAIN ((uintptr_t)1 << 63)
+#define PROF_TICK_US 5000
+static mach_port_t g_prof_main;
+static void *prof_sampler(void *arg) {
+    (void)arg;
+    pthread_setname_np("prof-sampler");
+    mach_port_t self = mach_thread_self();
+    for (;;) {
+        usleep(PROF_TICK_US);
+        thread_act_array_t threads;
+        mach_msg_type_number_t count;
+        if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS) continue;
+        for (mach_msg_type_number_t i = 0; i < count; i++) {
+            thread_basic_info_data_t basic;
+            mach_msg_type_number_t nb = THREAD_BASIC_INFO_COUNT;
+            if (threads[i] != self && thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&basic, &nb) == KERN_SUCCESS &&
+                basic.run_state == TH_STATE_RUNNING) {
+#if defined(__aarch64__)
+                arm_thread_state64_t state;
+                mach_msg_type_number_t ns = ARM_THREAD_STATE64_COUNT;
+                if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &ns) == KERN_SUCCESS) {
+                    uintptr_t pc = (uintptr_t)arm_thread_state64_get_pc(state) & ~PROF_MAIN;
+                    uint32_t k = __atomic_fetch_add(&g_samp_n, 1, __ATOMIC_RELAXED);
+                    g_samp[k & (PROF_N - 1)] = pc | (threads[i] == g_prof_main ? PROF_MAIN : 0);
+                }
+#endif
+            }
+            mach_port_deallocate(mach_task_self(), threads[i]);
+        }
+        vm_deallocate(mach_task_self(), (vm_address_t)threads, (vm_size_t)count * sizeof *threads);
+    }
+    return NULL;
+}
+#endif
+
 static void on_prof(int sig, siginfo_t *si, void *uc_) {
     (void)sig; (void)si;
     ucontext_t *uc = uc_;
@@ -50,6 +92,17 @@ void prof_start(void) {
     if (access(path, F_OK) == 0) return;
     g_samp = calloc(PROF_N, sizeof *g_samp);
     if (!g_samp) return;
+#if defined(__APPLE__) && defined(__aarch64__)
+    {
+        pthread_t sampler;
+        g_prof_main = pthread_mach_thread_np(pthread_self());  /* prof_start runs on the main thread */
+        if (pthread_create(&sampler, NULL, prof_sampler, NULL)) return;
+        pthread_detach(sampler);
+        g_prof_on = 1;
+        LOG("profiler on: on-core threads sampled every %d ms (save/noprof.txt turns it off)", PROF_TICK_US / 1000);
+        return;
+    }
+#endif
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = on_prof;
@@ -69,19 +122,21 @@ static int bin_cmp(const void *a, const void *b) {
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
-/* Called from the watchdog thread: top functions since the last report. */
-void prof_report(void) {
-    if (!g_prof_on) return;
-    uint32_t end = g_samp_n, start = g_samp_done;
-    if (end - start > PROF_N) start = end - PROF_N;
-    g_samp_done = end;
-    uint32_t total = end - start;
-    if (!total) return;
+/* Top functions among samples [start, end); main_only keeps the main thread's (Apple sampler). */
+static void prof_table(uint32_t start, uint32_t end, int main_only) {
+    uint32_t total = 0;
     enum { NB = 8192 };
     Bin *bins = calloc(NB, sizeof *bins);
     if (!bins) return;
     for (uint32_t k = start; k != end; k++) {
         uintptr_t pc = g_samp[k & (PROF_N - 1)];
+#ifdef __APPLE__
+        if (main_only && !(pc & PROF_MAIN)) continue;
+        pc &= ~PROF_MAIN;
+#else
+        (void)main_only;
+#endif
+        total++;
         Dl_info di;
         uintptr_t key = 0;
         const char *name = "?";
@@ -99,8 +154,12 @@ void prof_report(void) {
         }
     }
     qsort(bins, NB, sizeof *bins, bin_cmp);
+#if defined(__APPLE__) && defined(__aarch64__)
+    LOG("profile, %s: %u samples (%d ms on a core each)", main_only ? "main thread" : "all threads", total, PROF_TICK_US / 1000);
+#else
     LOG("profile: %u samples (1 ms CPU each)", total);
-    for (int i = 0; i < 30 && bins[i].n; i++) {
+#endif
+    for (int i = 0; i < (main_only ? 40 : 30) && bins[i].n; i++) {
         const char *b = strrchr(bins[i].name, '/');
         if (bins[i].base)
             LOG("  %5.1f%%  %s+0x%lx", 100.0 * bins[i].n / total, b ? b + 1 : bins[i].name,
@@ -109,6 +168,19 @@ void prof_report(void) {
             LOG("  %5.1f%%  %s", 100.0 * bins[i].n / total, b ? b + 1 : bins[i].name);
     }
     free(bins);
+}
+
+/* Called from the watchdog thread: top functions since the last report. */
+void prof_report(void) {
+    if (!g_prof_on) return;
+    uint32_t end = g_samp_n, start = g_samp_done;
+    if (end - start > PROF_N) start = end - PROF_N;
+    g_samp_done = end;
+    if (end == start) return;
+    prof_table(start, end, 0);
+#if defined(__APPLE__) && defined(__aarch64__)
+    prof_table(start, end, 1);
+#endif
 }
 
 /* Per-thread CPU use since the last call: the SIGPROF

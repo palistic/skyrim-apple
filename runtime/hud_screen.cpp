@@ -361,9 +361,29 @@ void layout(RECT *hud, RECT *fav, RECT *fav_src) {
 // ---------------------------------------------------------------- bridge
 // Hand-written device methods (see tools/gen_d3d9_bridge.py): plain
 // pass-through except during a menu pass on our target.
+// Skyrim renders the scene's depth a second time into a back-buffer-sized R32F colour target (638 of a
+// Riverwood frame's 2,013 draws), which unlike the D24S8 depth buffer can be read back and sampled. The last
+// one bound is kept here, not referenced: use it within the frame it was bound in.
+static IDirect3DSurface9 *g_scene_depth;
+IDirect3DSurface9 *d3d_scene_depth_target(void) { return g_scene_depth; }
+// LB_D3DTRACE: these calls define the frame's passes, so they say what the surface is, not only its handle.
+extern "C" int platform_frame_count(void);
+static void trace_surface(const char *call, uint32_t index, IDirect3DSurface9 *s) {
+    D3DSURFACE_DESC desc = {};
+    if (s) s->GetDesc(&desc);
+    char fourcc[5] = {(char)desc.Format, (char)(desc.Format >> 8), (char)(desc.Format >> 16), (char)(desc.Format >> 24), 0};
+    fprintf(stderr, "D3D %d IDirect3DDevice9::%s %u %p %ux%u format %u%s%s usage %x\n", platform_frame_count(), call, index,
+            (void *)s, desc.Width, desc.Height, (unsigned)desc.Format, desc.Format > 0xFFFF ? " " : "",
+            desc.Format > 0xFFFF ? fourcc : "", (unsigned)desc.Usage);
+}
 void B_IDirect3DDevice9_SetRenderTarget(CPU *c) {
     auto *d = (IDirect3DDevice9 *)com_host(ARG(0));
     auto *s = (IDirect3DSurface9 *)com_host(ARG(2));
+    if (g_d3d_trace) trace_surface("SetRenderTarget", ARG(1), s);
+    if (s && ARG(1) == 0) {  // remember the scene's depth target (see d3d_scene_depth_target)
+        D3DSURFACE_DESC desc;
+        if (SUCCEEDED(s->GetDesc(&desc)) && desc.Format == D3DFMT_R32F && desc.Width >= 640) g_scene_depth = s;
+    }
     if (in_pass() && ARG(1) == 0) {
         if (s && (s == g_from_rt || s == g_from_bb || s == g_rt)) { bind_rt(d); RET(0, 3); }
         g_on_rt = false;  // the menu draws into a target of its own (filters)
@@ -373,6 +393,7 @@ void B_IDirect3DDevice9_SetRenderTarget(CPU *c) {
 void B_IDirect3DDevice9_SetDepthStencilSurface(CPU *c) {
     auto *d = (IDirect3DDevice9 *)com_host(ARG(0));
     auto *s = (IDirect3DSurface9 *)com_host(ARG(1));
+    if (g_d3d_trace) trace_surface("SetDepthStencilSurface", 0, s);
     if (in_pass() && s && s == g_from_ds) s = g_ds;
     RET((uint32_t)d->SetDepthStencilSurface(s), 2);
 }
@@ -380,6 +401,7 @@ void B_IDirect3DDevice9_Clear(CPU *c) {
     auto *d = (IDirect3DDevice9 *)com_host(ARG(0));
     uint32_t n = ARG(1);
     const D3DRECT *rects = (const D3DRECT *)GPTR(ARG(2));
+    if (g_d3d_trace) fprintf(stderr, "D3D %d IDirect3DDevice9::Clear flags %x z %g\n", platform_frame_count(), ARG(3), ARGF(5));
     if (in_pass() && g_on_rt && n && rects) {
         D3DRECT r[16];
         if (n > 16) n = 16;

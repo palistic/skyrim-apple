@@ -46,8 +46,8 @@ typedef struct CPU {
 
 /* LB_CONST_MEM (generated code only): the guest base is set once in main() before any guest code runs.
  * Declared const there, the compiler loads it once per function; otherwise, under -fno-strict-aliasing, every
- * guest store may alias it and each later access reloads it. The runtime keeps the writable declaration, and
- * its definition (main.c) must never see this one. */
+ * guest store may alias it and each later access reloads it (about 11% of all instructions in the game). The
+ * runtime keeps the writable declaration, and its definition (main.c) must never see this one. */
 #ifdef LB_CONST_MEM
 extern uint8_t *const MEM;
 #else
@@ -163,6 +163,21 @@ static inline void fcompare(CPU *c, double a, double b) {
 static inline uint16_t fstatus(CPU *c) {
     return (uint16_t)((c->c3 << 14) | ((c->top & 7) << 11) | (c->c2 << 10) |
                       (c->c1 << 9) | (c->c0 << 8));
+}
+/* For generated code that keeps the top index and the last compare's C3/C2/C0 in locals (X87CACHE in
+ * tools/lift.py): fcompare that also returns those bits in status-word position, and fstatus built from them. */
+static inline uint32_t fcompare_sw(CPU *c, double a, double b) {
+    uint32_t c0, c2, c3;
+    if (a != a || b != b) { c0 = c2 = c3 = 1; }
+    else { c0 = a < b; c2 = 0; c3 = a == b; }
+    c->c0 = c0; c->c2 = c2; c->c3 = c3;
+    return (c3 << 14) | (c2 << 10) | (c0 << 8);
+}
+static inline uint16_t fstatus_sw(CPU *c, uint32_t sw, uint32_t top) {
+    return (uint16_t)(sw | (top << 11) | (c->c1 << 9));
+}
+static inline uint16_t fstatus_top(CPU *c, uint32_t top) {
+    return (uint16_t)((c->c3 << 14) | (top << 11) | (c->c2 << 10) | (c->c1 << 9) | (c->c0 << 8));
 }
 static inline double fround(CPU *c, double v) {
     switch ((c->fpu_cw >> 10) & 3) {

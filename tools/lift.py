@@ -9,6 +9,7 @@ so a missing feature fails loudly at runtime instead of silently.
 """
 import json
 import os
+import re
 import sys
 
 import capstone
@@ -83,6 +84,103 @@ MEMORDER = os.environ.get("LIFT_MEMORDER") == "1"
 TSO = os.environ.get("LIFT_TSO", "1") == "1"
 
 
+# x87 register caching (LIFT_X87CACHE=0 turns it off). The plain model keeps the x87 stack in c->st[] with the
+# top index in c->top, so every operation is a load and a store at a computed index, and none of it can be
+# forwarded past a guest store. With caching, a function that uses x87 keeps the top index in a local (`ft`,
+# written back by SPILLF and reread by RELOADF) and, within a basic block, the registers it touches in locals
+# fr0..fr7 (named by their position relative to `ft`). They are loaded on first use and written back before
+# anything else can see the CPU state: the end of the block, a call, a return, or a helper that takes `c`.
+# c->st[] and c->top therefore hold exactly what the plain model would hold at each of those points.
+X87CACHE = os.environ.get("LIFT_X87CACHE", "1") == "1"
+X87_LINE = re.compile(r"\bST\(|\bfpush\(|\bfpop\(|\bfstatus\(c\)|\bfxam\(c\)|\bfprem\(c|\bfpu_env\(c|c->top\b")
+X87_SYNC = re.compile(r"\bfxam\(c\)|\bfprem\(c|\bfpu_env\(c|c->top\b")
+X87_TOK = re.compile(r"fpush\(c, |fpop\(c\);|ST\((\d)\)( = (?!=))?|fcompare\(c, |fstatus\(c\)|c->c[0-3] = |;")
+PASSES_CPU = re.compile(r"\(c[,)]|\bgoto\b|\breturn\b")
+X87_LOCALS = "    double fr0, fr1, fr2, fr3, fr4, fr5, fr6, fr7; uint32_t ft = c->top, fsw = 0; (void)fsw;"
+
+
+class X87Cache:
+    """Per-function state of the x87 register cache; rewrites the x87 lines of one basic block at a time."""
+
+    def __init__(self):
+        self.used = False
+        self.reset()
+
+    def reset(self):
+        self.d = 0             # pushes and pops since `ft` was last exact, as a top offset
+        self.cached = set()    # relative registers whose local holds the current value
+        self.dirty = set()     # ... and differs from c->st[]
+        self.sw = False        # the local `fsw` holds C3/C2/C0 as the last compare left them
+
+    def flush(self):
+        """Lines that write the cached state back; afterwards `ft` is the top and nothing is cached."""
+        out = ["c->st[(ft + %d) & 7] = fr%d;" % (k, k) for k in sorted(self.dirty)]
+        if self.d & 7:
+            out.append("ft = (ft + %d) & 7;" % (self.d & 7))
+        self.reset()
+        return out
+
+    def rewrite(self, line):
+        self.used = True
+        if X87_SYNC.search(line):
+            # reads or changes the CPU's own x87 state: hand it over exactly, then start again
+            return self.flush() + ["c->top = ft;", line, "ft = c->top;"]
+        line = line.replace("ST(0) = ST(0); ", "")  # fstp st(0): only the pop matters
+        conditional = line.startswith("if (")
+        loads, out, pending, pos = [], [], [], 0
+        while True:
+            m = X87_TOK.search(line, pos)
+            if not m:
+                out.append(line[pos:])
+                break
+            out.append(line[pos:m.start()])
+            tok = m.group(0)
+            pos = m.end()
+            if tok == ";":
+                out.append(";")
+                self.cached.update(pending)
+                self.dirty.update(pending)
+                pending = []
+            elif tok == "fpop(c);":
+                self.d += 1
+            elif tok == "fpush(c, ":
+                depth, end = 1, pos
+                while depth:
+                    depth += {"(": 1, ")": -1}.get(line[end], 0)
+                    end += 1
+                arg = line[pos:end - 1]
+                if "ST(" in arg or "fpush" in arg or line[end] != ";":
+                    raise Unsupported("x87 cache: fpush argument")
+                self.d -= 1
+                k = self.d & 7
+                out.append("fr%d = %s;" % (k, arg))
+                self.cached.add(k)
+                self.dirty.add(k)
+                pos = end + 1
+            elif tok.startswith("ST("):
+                write = m.group(2) is not None
+                k = (self.d + int(m.group(1))) & 7
+                if (not write or conditional) and k not in self.cached:
+                    loads.append("fr%d = c->st[(ft + %d) & 7];" % (k, k))
+                    self.cached.add(k)
+                out.append("fr%d%s" % (k, " = " if write else ""))
+                if write:
+                    pending.append(k)
+            elif tok == "fcompare(c, ":
+                out.append("fsw = fcompare_sw(c, ")
+                self.sw = True
+            elif tok == "fstatus(c)":
+                top = "(ft + %d) & 7" % (self.d & 7) if self.d & 7 else "ft"
+                out.append("fstatus_sw(c, fsw, %s)" % top if self.sw else "fstatus_top(c, %s)" % top)
+            else:  # c->cN = ...: the condition codes change behind the local copy
+                out.append(tok)
+                self.sw = False
+        if pending:
+            raise Unsupported("x87 cache: unterminated statement")
+        text = " ".join("".join(out).split())
+        return loads + ([text] if text else [])
+
+
 def stack_op(i, op, frame):
     """Is memory operand `op` this thread's own stack (or its TEB)?"""
     if op.mem.base and i.reg_name(op.mem.base) in (("esp", "ebp") if frame else ("esp",)):
@@ -149,7 +247,9 @@ HOST_OVERRIDES_MARVEL = {
             0x6E7AA0},  # runtime shader compile (D3DCompile): serialised -> runtime/marvel_shims.c
     "d3dc": {0x9066C20, 0x9067AD0},  # D3DCompile/D3DPreprocess: progress, timing, warm-up gate -> runtime/marvel_shims.c
 }
-HOST_OVERRIDES_SKYRIM = {}
+HOST_OVERRIDES_SKYRIM = {
+    "exe": {0x472580},  # plane/sphere side test, hot in culling -> runtime/skyrim_native.c
+}
 # LIFT_GAME=marvel|skyrim selects the overrides (runtime built with -DGAME_MARVEL / -DGAME_SKYRIM).
 HOST_OVERRIDES = {"marvel": HOST_OVERRIDES_MARVEL, "skyrim": HOST_OVERRIDES_SKYRIM}.get(
     os.environ.get("LIFT_GAME"), HOST_OVERRIDES_BATMAN)
@@ -290,7 +390,7 @@ class Lifter:
         if mn == "xchg" and any(op.type == x86.X86_OP_MEM for op in ops):
             m, r = (ops[0], ops[1]) if ops[0].type == x86.X86_OP_MEM else (ops[1], ops[0])
             T = UT[m.size]
-            e("{ %s o_ = __atomic_exchange_n((%s *)(MEM + %s), (%s)%s, __ATOMIC_SEQ_CST); %s }" % (
+            e("{ %s o_ = GA_XCHG((%s *)(MEM + %s), (%s)%s); %s }" % (
                 T, T, self.addr(i, m), T, self.get(i, r), self.set(i, r, "o_")))
             return o
         if locked and mn in ("bts", "btr", "btc") and ops[0].type == x86.X86_OP_MEM:
@@ -300,9 +400,9 @@ class Lifter:
                 w, bb = "(%s + (uint32_t)(((int32_t)%s >> 5) * 4))" % (a, r), "(%s & 31)" % r
             else:
                 w, bb = "(%s)" % a, "%d" % (ops[1].imm & 31)
-            fn = {"bts": "__atomic_fetch_or", "btr": "__atomic_fetch_and", "btc": "__atomic_fetch_xor"}[mn]
+            fn = {"bts": "GA_FETCH_OR", "btr": "GA_FETCH_AND", "btc": "GA_FETCH_XOR"}[mn]
             mask = ("~(1u << %s)" if mn == "btr" else "(1u << %s)") % bb
-            e("{ uint32_t w_ = %s; uint32_t o_ = %s((uint32_t *)(MEM + w_), %s, __ATOMIC_SEQ_CST); "
+            e("{ uint32_t w_ = %s; uint32_t o_ = %s((uint32_t *)(MEM + w_), %s); "
               "f.cf = (o_ >> %s) & 1; }" % (w, fn, mask, bb))
             return o
         if locked and not getattr(self, "_lk", False) and ops and ops[0].type == x86.X86_OP_MEM and \
@@ -315,9 +415,8 @@ class Lifter:
             finally:
                 self._lk = False
             e("{ uint32_t la_ = %s; %s old_, new_; Flags f0_ = f; do { f = f0_; "
-              "old_ = __atomic_load_n((%s *)(MEM + la_), __ATOMIC_SEQ_CST); new_ = old_; %s } "
-              "while (!__atomic_compare_exchange_n((%s *)(MEM + la_), &old_, new_, 0, __ATOMIC_SEQ_CST, "
-              "__ATOMIC_SEQ_CST)); }" % (la, T, T, " ".join(body), T))
+              "old_ = GA_LOAD((%s *)(MEM + la_)); new_ = old_; %s } "
+              "while (!GA_CAS((%s *)(MEM + la_), &old_, new_)); }" % (la, T, T, " ".join(body), T))
             return o
 
         # x87 is decoded from raw opcode bytes (capstone's register forms are ambiguous)
@@ -453,8 +552,8 @@ class Lifter:
             src = self.get(i, ops[1])
             if ops[0].type == x86.X86_OP_MEM:
                 # atomic on the host too (Skyrim's spinlocks / lock-free lists)
-                e("{ %s exp_ = (%s)%s; __atomic_compare_exchange_n((%s *)(MEM + %s), &exp_, (%s)%s, 0, "
-                  "__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); (void)sub%d((%s)%s, exp_, &f); if (!f.zf) { %s } }" % (
+                e("{ %s exp_ = (%s)%s; GA_CAS((%s *)(MEM + %s), &exp_, (%s)%s); "
+                  "(void)sub%d((%s)%s, exp_, &f); if (!f.zf) { %s } }" % (
                       T, T, self.reg_get(acc), T, self.addr(i, ops[0]), T, src, n, T, self.reg_get(acc),
                       self.reg_set(acc, "exp_")))
             else:
@@ -465,15 +564,14 @@ class Lifter:
             n, T = BITS[ops[0].size], UT[ops[0].size]
             s = self.get(i, ops[1])
             if ops[0].type == x86.X86_OP_MEM:
-                e("{ %s s_ = %s; %s o_ = __atomic_fetch_add((%s *)(MEM + %s), s_, __ATOMIC_SEQ_CST); "
+                e("{ %s s_ = %s; %s o_ = GA_FETCH_ADD((%s *)(MEM + %s), s_); "
                   "(void)add%d(o_, s_, &f); %s }" % (T, s, T, T, self.addr(i, ops[0]), n, self.set(i, ops[1], "o_")))
             else:
                 e("{ %s d_ = %s, s_ = %s; %s r_ = add%d(d_, s_, &f); %s %s }" % (
                     T, self.get(i, ops[0]), s, T, n, self.set(i, ops[1], "d_"), self.set(i, ops[0], "r_")))
         elif mn == "cmpxchg8b":
             e("{ uint64_t exp_ = ((uint64_t)edx << 32) | eax, des_ = ((uint64_t)ecx << 32) | ebx; "
-              "if (__atomic_compare_exchange_n((uint64_t *)(MEM + %s), &exp_, des_, 0, __ATOMIC_SEQ_CST, "
-              "__ATOMIC_SEQ_CST)) f.zf = 1; else { f.zf = 0; eax = (uint32_t)exp_; edx = (uint32_t)(exp_ >> 32); } }"
+              "if (GA_CAS((uint64_t *)(MEM + %s), &exp_, des_)) f.zf = 1; else { f.zf = 0; eax = (uint32_t)exp_; edx = (uint32_t)(exp_ >> 32); } }"
               % self.addr(i, ops[0]))
         elif mn == "pslldq":
             x = self.xmm(i, ops[0])
@@ -1129,6 +1227,7 @@ class Lifter:
         head = img[self.f - BASE:self.f - BASE + 5]
         frame = head[:3] == b"\x55\x8b\xec" or head == b"\x8b\xff\x55\x8b\xec"  # optional hot-patch mov edi, edi
         self.frame = frame
+        xc = X87Cache() if X87CACHE else None
         for bi, (a, b) in enumerate(order):
             o.append("L_%X:" % a)
             insns = decode_block(a, b)
@@ -1151,8 +1250,22 @@ class Lifter:
                     if shared_load(i, frame):
                         ld_pending = True
                     lines = mem_order(i, lines, frame)
+                if xc:
+                    cached = []
+                    for line in lines:
+                        if X87_LINE.search(line):
+                            cached += xc.rewrite(line)
+                        else:
+                            # the block ends here, or `c` goes to code that may read the x87 state
+                            if self.is_term(i) or PASSES_CPU.search(line):
+                                cached += xc.flush()
+                            cached.append(line)
+                    lines = cached
                 for line in lines:
                     o.append("    " + line)
+                if last and xc:
+                    for line in xc.flush():
+                        o.append("    " + line)
                 if last and not self.is_term(i):
                     # fall through into the next block
                     if bi + 1 < len(order) and order[bi + 1][0] == nxt:
@@ -1164,6 +1277,9 @@ class Lifter:
             o.append("L_dispatch:")
             o.append("    switch (jt_) { %s default: %s rt_call(c, jt_); return; }" % (cases, SPILL))
         o.append("}")
+        if xc and xc.used:
+            o[:] = [l.replace(SPILL, "SPILLF();").replace(RELOAD, "RELOADF();") for l in o]
+            o.insert(5, X87_LOCALS)
         return o
 
     def is_term(self, i):
