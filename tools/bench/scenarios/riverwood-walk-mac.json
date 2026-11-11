@@ -1,0 +1,38 @@
+{
+  "description": "riverwood-walk timed for the macOS native build on the M1 (main menu up by frame 300, Riverwood loaded by frame 2100): coc into Riverwood, stand for 10 s, run forward for 20 s. Default character, no save. One console command only: keys typed within about 1.5 s after a Return are dropped (observed).",
+  "console_at": 600,
+  "console": [
+    "coc riverwood"
+  ],
+  "command_gap": 30,
+  "keys": [
+    {
+      "key": "W",
+      "start": 3000,
+      "frames": 1200
+    }
+  ],
+  "phases": {
+    "menu": [
+      300,
+      600
+    ],
+    "idle": [
+      2400,
+      3000
+    ],
+    "run": [
+      3000,
+      4200
+    ]
+  },
+  "shots": [
+    696,
+    2390,
+    2990,
+    3600,
+    4190
+  ],
+  "exit_frame": 4300,
+  "console_close": false
+}

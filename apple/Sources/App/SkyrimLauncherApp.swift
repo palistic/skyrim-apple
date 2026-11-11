@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+import CompositorServices
+#endif
 
 @main
 struct SkyrimLauncherApp: App {
@@ -29,12 +32,24 @@ struct SkyrimLauncherApp: App {
                 #if os(visionOS)
                 .frame(minWidth: 640, minHeight: 700)
                 #endif
+                #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+                // Tells SDL which window scene is the game's, before an ImmersiveSpace adds a second one.
+                .background(GameSceneReporter())
+                #endif
                 .preferredColorScheme(.dark)
         }
         #if os(visionOS)
         // A conventional flat window. Immersive spaces stay out until windowed play is accepted.
         .defaultSize(width: 900, height: 840)
         .windowResizability(.contentMinSize)
+        #endif
+        #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+        ImmersiveSpace(id: ImmersiveScreen.spaceID) {
+            CompositorLayer(configuration: ImmersiveScreenConfiguration()) { layer in
+                ImmersiveCompositor(layer: layer).start()
+            }
+        }
+        .immersionStyle(selection: .constant(.full), in: .full)
         #endif
         #endif
     }

@@ -14,10 +14,35 @@
 #include "../util/sync/sync_signal.h"
 
 #include <vector>
+#if defined(__APPLE__)
+#include <array>
+#include <atomic>
+#endif
 
 namespace dxvk {
 
   class D3D9Surface;
+
+#if defined(__APPLE__)
+  /**
+   * \brief Skyrim Apple port: present-tap slots shared with the consumer
+   *
+   * Owned by the swap chain and by every frame handed to the consumer, so the images
+   * outlive a back-buffer resize until the consumer has released them.
+   */
+  struct D3D9PresentTapState : public RcObject {
+    // Shown + retiring (until the compositor's GPU work ends) + two queued leaves one for the game to write; with
+    // three the game often found none free and its frame was never shown.
+    static constexpr uint32_t Slots = 5;
+    Rc<sync::Fence>                      fence;
+    std::array<Rc<DxvkImage>, Slots>     images;
+    std::array<std::atomic<bool>, Slots> busy = { };
+    // The scene's depth (an R32F colour target the game renders), copied next to the colour image when the
+    // runtime names one for this Present (skyrim_present_tap_set_depth). Created on first use.
+    std::array<Rc<DxvkImage>, Slots>     depthImages;
+    std::array<bool, Slots>              hasDepth = { };
+  };
+#endif
 
   using D3D9SwapChainExBase = D3D9DeviceChild<IDirect3DSwapChain9Ex>;
   class D3D9SwapChainEx final : public D3D9SwapChainExBase {
@@ -127,6 +152,22 @@ namespace dxvk {
     double                    m_displayRefreshRate = 0.0;
 
     void PresentImage(UINT PresentInterval);
+
+#if defined(__APPLE__)
+    // Skyrim Apple port: present tap (LB_PRESENT_TAP=1), see include/native/skyrim_present_tap.h.
+    bool                    m_presentTap     = false;
+    uint32_t                m_presentTapNext = 0;
+    Rc<D3D9PresentTapState> m_presentTapState;
+
+    bool                    m_presentTapOnly = false;  // decided once per Present, used by PresentImage
+    bool                    m_presentTapOnlyLogged = false;
+
+    int32_t RecordPresentTap(const Rc<DxvkImage>& Source);
+    void RecordPresentTapDepth(uint32_t Slot);
+    void NotifyPresentTap(uint32_t Slot);
+    bool PresentTapExclusive() const;
+    void SubmitTapOnly();
+#endif
 
     void SubmitPresent(const vk::PresenterSync& Sync, uint32_t FrameId);
 

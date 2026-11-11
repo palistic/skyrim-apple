@@ -31,4 +31,8 @@ void d3d_trace(CPU *c, const char *name, int nargs);
 extern "C" {
 void *platform_window(void);
 void platform_present_hook(void);
+void platform_present_begin(void);
+void platform_present_end(void);
+/* time the 60 fps pacing slept after this Present, for the benchmark's per-frame work time */
+void platform_present_slept(double ms);
 }

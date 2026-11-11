@@ -1,0 +1,33 @@
+{
+  "description": "Headset version of the M1 scenario: coc riverwood (one console command; a second arrives garbled), stand 10 s (idle), then run forward (run). FRAME NUMBERS ARE PLACEHOLDERS until `bench.py calibrate --device <udid>` shows when the main menu is up on the headset and how long the load takes; shift console_at, the phases, the keys, the shots and exit_frame together.",
+  "console_at": 1800,
+  "console": [
+    "coc riverwood"
+  ],
+  "console_close": false,
+  "keys": [
+    {
+      "key": "W",
+      "start": 4200,
+      "frames": 1200
+    }
+  ],
+  "phases": {
+    "idle": [
+      3600,
+      4200
+    ],
+    "run": [
+      4200,
+      5400
+    ]
+  },
+  "shots": [
+    1790,
+    3000,
+    3590,
+    4190,
+    5390
+  ],
+  "exit_frame": 5500
+}

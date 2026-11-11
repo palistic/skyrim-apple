@@ -4,6 +4,17 @@
 
 #include "d3d9_hud.h"
 
+#if defined(__APPLE__)
+#include "skyrim_present_tap.h"
+
+namespace {
+  std::atomic<skyrim_present_tap_fn> g_presentTapFn   = { nullptr };
+  std::atomic<void*>                 g_presentTapUser = { nullptr };
+  std::atomic<bool>                  g_presentTapExclusive = { false };
+  std::atomic<IDirect3DSurface9*>    g_presentTapDepth = { nullptr };
+}
+#endif
+
 namespace dxvk {
 
 #ifndef DXVK_NATIVE
@@ -208,6 +219,12 @@ namespace dxvk {
 
     InitRamp();
 
+#if defined(__APPLE__)
+    m_presentTap = env::getEnvVar("LB_PRESENT_TAP") == "1";
+    if (m_presentTap)
+      Logger::info("D3D9SwapChainEx: present tap enabled (LB_PRESENT_TAP=1)");
+#endif
+
     // Apply initial window mode and fullscreen state
     if (!m_presentParams.Windowed && FAILED(EnterFullscreenMode(pPresentParams, pFullscreenDisplayMode)))
       throw DxvkError("D3D9: Failed to set initial fullscreen state");
@@ -292,6 +309,24 @@ namespace dxvk {
     m_vsync     = vsync;
 
     m_lastDialog = m_dialog;
+
+#if defined(__APPLE__)
+    // Tap-only: the WSI swapchain is left alone (m_dirty stays set and is handled on the first normal present).
+    m_presentTapOnly = PresentTapExclusive();
+    if (m_presentTapOnly != m_presentTapOnlyLogged) {
+      m_presentTapOnlyLogged = m_presentTapOnly;
+      Logger::info(m_presentTapOnly ? "D3D9SwapChainEx: tap-only presents (immersive)" : "D3D9SwapChainEx: WSI presents resumed");
+    }
+    if (m_presentTapOnly) {
+      try {
+        PresentImage(0);
+        return D3D_OK;
+      } catch (const DxvkError& e) {
+        Logger::err(e.message());
+        return D3DERR_DEVICEREMOVED;
+      }
+    }
+#endif
 
     try {
       if (recreate)
@@ -812,6 +847,18 @@ namespace dxvk {
     ++m_frameId;
 
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
+#if defined(__APPLE__)
+      if (m_presentTapOnly) {
+        // No WSI acquire, blit or present. Same copy-then-signal order as below, so the frame fence covers the copy.
+        m_context->beginRecording(m_device->createCommandList());
+        int32_t tapSlot = RecordPresentTap(swapImage);
+        m_context->signal(m_frameLatencySignal, m_frameId);
+        SubmitTapOnly();
+        if (tapSlot >= 0)
+          NotifyPresentTap(uint32_t(tapSlot));
+        break;
+      }
+#endif
       SynchronizePresent();
 
       // Presentation semaphores and WSI swap chain image
@@ -832,6 +879,11 @@ namespace dxvk {
       m_context->beginRecording(
         m_device->createCommandList());
 
+#if defined(__APPLE__)
+      // Copy before the WSI blit and the frame-latency signal, so the frame fence covers the copy.
+      int32_t tapSlot = (m_presentTap && i == 0) ? RecordPresentTap(swapImage) : -1;
+#endif
+
       VkRect2D srcRect = {
         {  int32_t(m_srcRect.left),                    int32_t(m_srcRect.top)                    },
         { uint32_t(m_srcRect.right - m_srcRect.left), uint32_t(m_srcRect.bottom - m_srcRect.top) } };
@@ -851,6 +903,11 @@ namespace dxvk {
         m_context->signal(m_frameLatencySignal, m_frameId);
 
       SubmitPresent(sync, i);
+
+#if defined(__APPLE__)
+      if (tapSlot >= 0)
+        NotifyPresentTap(uint32_t(tapSlot));
+#endif
     }
 
     SyncFrameLatency();
@@ -862,6 +919,182 @@ namespace dxvk {
 
     m_parent->m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
   }
+
+
+#if defined(__APPLE__)
+  int32_t D3D9SwapChainEx::RecordPresentTap(const Rc<DxvkImage>& Source) {
+    // No consumer: never mark slots busy, so nothing can leak.
+    if (g_presentTapFn.load(std::memory_order_acquire) == nullptr)
+      return -1;
+
+    const DxvkImageCreateInfo& src = Source->info();
+
+    if (src.sampleCount != VK_SAMPLE_COUNT_1_BIT) {
+      static bool warned = false;
+      if (!warned) { warned = true; Logger::warn("D3D9SwapChainEx: present tap skipped, multisampled back buffer"); }
+      return -1;
+    }
+
+    // (Re)create the slots when the back buffer changes. A new state object keeps the old images alive until the
+    // consumer has released every frame it still holds from them.
+    bool recreate = m_presentTapState == nullptr;
+    if (!recreate) {
+      const DxvkImageCreateInfo& tap = m_presentTapState->images[0]->info();
+      recreate = tap.format != src.format || tap.extent.width != src.extent.width
+              || tap.extent.height != src.extent.height;
+    }
+
+    if (recreate) {
+      Rc<D3D9PresentTapState> state = new D3D9PresentTapState();
+      state->fence = m_frameLatencySignal;
+
+      DxvkImageCreateInfo info = { };
+      info.type        = VK_IMAGE_TYPE_2D;
+      info.format      = src.format;
+      info.flags       = 0;
+      info.sampleCount = VK_SAMPLE_COUNT_1_BIT;
+      info.extent      = { src.extent.width, src.extent.height, 1u };
+      info.numLayers   = 1;
+      info.mipLevels   = 1;
+      info.usage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+      info.stages      = VK_PIPELINE_STAGE_TRANSFER_BIT;
+      info.access      = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+      info.tiling      = VK_IMAGE_TILING_OPTIMAL;
+      info.layout      = VK_IMAGE_LAYOUT_GENERAL;
+
+      for (uint32_t s = 0; s < D3D9PresentTapState::Slots; s++)
+        state->images[s] = m_device->createImage(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+      m_presentTapState = state;
+      m_presentTapNext  = 0;
+    }
+
+    for (uint32_t n = 0; n < D3D9PresentTapState::Slots; n++) {
+      uint32_t slot = (m_presentTapNext + n) % D3D9PresentTapState::Slots;
+      bool expected = false;
+
+      if (!m_presentTapState->busy[slot].compare_exchange_strong(expected, true))
+        continue;
+
+      m_presentTapNext = (slot + 1) % D3D9PresentTapState::Slots;
+
+      VkImageSubresourceLayers layers = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+      m_context->copyImage(
+        m_presentTapState->images[slot], layers, VkOffset3D { 0, 0, 0 },
+        Source,                          layers, VkOffset3D { 0, 0, 0 },
+        VkExtent3D { src.extent.width, src.extent.height, 1u });
+      RecordPresentTapDepth(slot);
+      return int32_t(slot);
+    }
+
+    // The consumer still holds every slot: skip the tap this frame rather than stall the game.
+    return -1;
+  }
+
+
+  void D3D9SwapChainEx::RecordPresentTapDepth(uint32_t Slot) {
+    D3D9PresentTapState* state = m_presentTapState.ptr();
+    state->hasDepth[Slot] = false;
+
+    // Only a single-sample, single-channel float colour target the size of the tap image: the game's own
+    // scene depth (runtime/hud_screen.cpp). Anything else is ignored rather than copied.
+    IDirect3DSurface9* named = g_presentTapDepth.load(std::memory_order_acquire);
+    if (named == nullptr)
+      return;
+    auto* surface = static_cast<D3D9Surface*>(named);
+    D3D9CommonTexture* texture = surface->GetCommonTexture();
+    if (texture == nullptr)
+      return;
+    Rc<DxvkImage> depth = texture->GetImage();
+    if (depth == nullptr)
+      return;
+    const DxvkImageCreateInfo& src = depth->info();
+    const DxvkImageCreateInfo& color = state->images[Slot]->info();
+    if (src.format != VK_FORMAT_R32_SFLOAT || src.sampleCount != VK_SAMPLE_COUNT_1_BIT
+     || src.extent.width != color.extent.width || src.extent.height != color.extent.height)
+      return;
+
+    if (state->depthImages[Slot] == nullptr) {
+      DxvkImageCreateInfo info = { };
+      info.type        = VK_IMAGE_TYPE_2D;
+      info.format      = VK_FORMAT_R32_SFLOAT;
+      info.flags       = 0;
+      info.sampleCount = VK_SAMPLE_COUNT_1_BIT;
+      info.extent      = { src.extent.width, src.extent.height, 1u };
+      info.numLayers   = 1;
+      info.mipLevels   = 1;
+      info.usage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+      info.stages      = VK_PIPELINE_STAGE_TRANSFER_BIT;
+      info.access      = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+      info.tiling      = VK_IMAGE_TILING_OPTIMAL;
+      info.layout      = VK_IMAGE_LAYOUT_GENERAL;
+      state->depthImages[Slot] = m_device->createImage(info, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    }
+
+    VkImageSubresourceLayers layers = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    m_context->copyImage(
+      state->depthImages[Slot], layers, VkOffset3D { 0, 0, 0 },
+      depth,                    layers, VkOffset3D { 0, 0, 0 },
+      VkExtent3D { src.extent.width, src.extent.height, 1u });
+    state->hasDepth[Slot] = true;
+  }
+
+
+  void D3D9SwapChainEx::NotifyPresentTap(uint32_t Slot) {
+    D3D9PresentTapState* state = m_presentTapState.ptr();
+    skyrim_present_tap_fn fn = g_presentTapFn.load(std::memory_order_acquire);
+
+    if (fn == nullptr) {
+      // Callback cleared between record and notify: the copy is harmless, just free the slot.
+      state->busy[Slot].store(false, std::memory_order_release);
+      return;
+    }
+
+    const DxvkImageCreateInfo& info = state->images[Slot]->info();
+
+    skyrim_present_tap_frame frame = { };
+    frame.vk_device = reinterpret_cast<void*>(m_device->handle());
+    frame.vk_queue  = reinterpret_cast<void*>(m_device->queues().graphics.queueHandle);
+    frame.vk_image  = uint64_t(reinterpret_cast<uintptr_t>(state->images[Slot]->handle()));
+    frame.slot      = Slot;
+    frame.width     = info.extent.width;
+    frame.height    = info.extent.height;
+    frame.vk_format = uint32_t(info.format);
+    frame.frame_id  = m_frameId;
+    frame.state     = state;
+    if (state->hasDepth[Slot]) {
+      const DxvkImageCreateInfo& depth = state->depthImages[Slot]->info();
+      frame.depth_vk_image  = uint64_t(reinterpret_cast<uintptr_t>(state->depthImages[Slot]->handle()));
+      frame.depth_width     = depth.extent.width;
+      frame.depth_height    = depth.extent.height;
+      frame.depth_vk_format = uint32_t(depth.format);
+    }
+
+    state->incRef(); // dropped by skyrim_present_tap_release
+    fn(g_presentTapUser.load(std::memory_order_acquire), &frame);
+  }
+
+
+  bool D3D9SwapChainEx::PresentTapExclusive() const {
+    // All three are required: the env knob, a registered consumer, and the runtime's immersive flag.
+    return m_presentTap
+        && g_presentTapExclusive.load(std::memory_order_acquire)
+        && g_presentTapFn.load(std::memory_order_acquire) != nullptr;
+  }
+
+
+  void D3D9SwapChainEx::SubmitTapOnly() {
+    // Like SubmitPresent without the WSI semaphores and presentImage. m_presentStatus is untouched, so the next
+    // normal present still synchronizes against the last real WSI present.
+    m_parent->EmitCs([this,
+      cCommandList = m_context->endRecording()
+    ] (DxvkContext* ctx) {
+      m_device->submitCommandList(cCommandList, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    });
+
+    m_parent->FlushCsChunk();
+  }
+#endif
 
 
   void D3D9SwapChainEx::SubmitPresent(const vk::PresenterSync& Sync, uint32_t FrameId) {
@@ -1318,3 +1551,41 @@ namespace dxvk {
   }
 
 }
+
+
+#if defined(__APPLE__)
+extern "C" void skyrim_present_tap_set(skyrim_present_tap_fn fn, void* user) {
+  g_presentTapUser.store(user, std::memory_order_release);
+  g_presentTapFn.store(fn, std::memory_order_release);
+}
+
+
+extern "C" void skyrim_present_tap_wait(void* state, uint64_t frame_id) {
+  auto* s = static_cast<dxvk::D3D9PresentTapState*>(state);
+  s->fence->wait(frame_id);
+}
+
+
+extern "C" void skyrim_present_tap_release(void* state, uint32_t slot) {
+  auto* s = static_cast<dxvk::D3D9PresentTapState*>(state);
+  s->busy[slot].store(false, std::memory_order_release);
+  if (s->decRef() == 0)
+    delete s;
+}
+
+
+extern "C" int skyrim_present_tap_ready(void* state, uint64_t frame_id) {
+  auto* s = static_cast<dxvk::D3D9PresentTapState*>(state);
+  return s->fence->value() >= frame_id ? 1 : 0;
+}
+
+
+extern "C" void skyrim_present_tap_set_depth(void* surface) {
+  g_presentTapDepth.store(static_cast<IDirect3DSurface9*>(surface), std::memory_order_release);
+}
+
+
+extern "C" void skyrim_present_tap_set_exclusive(int on) {
+  g_presentTapExclusive.store(on != 0, std::memory_order_release);
+}
+#endif

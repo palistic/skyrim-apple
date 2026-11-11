@@ -1,0 +1,32 @@
+{
+  "description": "Headset A/B scenario, run with --env LB_MAX_FPS=120 so frame time shows the game's cost instead of the 60 fps cap (the build installed before 2026-11-10 logs no work column). coc whiterunorigin, stand (idle), run up the street (run). Frame numbers assume up to 120 fps: menu by 1800, city loaded by 6000.",
+  "console_at": 1800,
+  "console": [
+    "coc whiterunorigin"
+  ],
+  "console_close": false,
+  "keys": [
+    {
+      "key": "W",
+      "start": 7200,
+      "frames": 1100
+    }
+  ],
+  "phases": {
+    "idle": [
+      6000,
+      7200
+    ],
+    "run": [
+      7200,
+      8300
+    ]
+  },
+  "shots": [
+    1790,
+    5990,
+    7190,
+    8290
+  ],
+  "exit_frame": 8400
+}

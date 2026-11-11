@@ -3,6 +3,7 @@
 #ifndef SkyrimNativeBridge_h
 #define SkyrimNativeBridge_h
 #include <stddef.h>
+#include <TargetConditionals.h>
 
 int skyrim_native_runtime_linked(void);
 const char *skyrim_native_identity(void);
@@ -11,5 +12,28 @@ int skyrim_native_validate(char *error, size_t error_size);
 int skyrim_native_run(const char *save_root, char *error, size_t error_size);
 void skyrim_native_set_paused(int paused);
 void skyrim_native_request_quit(void);
+#if defined(__APPLE__) && TARGET_OS_VISION
+/* SDL visionOS overlay (ipad/visionos/sdl): the UIWindowScene SDL's game window must attach to.
+ * Pass Unmanaged.passUnretained(scene).toOpaque(); held weakly. Main thread. */
+void skyrim_sdl_set_game_scene(void *window_scene);
+
+/* ipad/immersive_bridge.mm: the game's frames for the immersive compositor. */
+#include <stdint.h>
+typedef struct skyrim_immersive_frame {
+    void *texture;           /* id<MTLTexture>, unretained; valid while shown */
+    void *retired_state;     /* with retired_slot: give back through skyrim_immersive_release once no GPU work reads it */
+    uint32_t retired_slot;
+    int retired;
+    int is_new;
+    int needs_srgb_decode;
+    uint32_t width;
+    uint32_t height;
+    void *depth_texture;     /* id<MTLTexture> (R32Float, D3D depth 0 near to 1 far) or NULL; same lifetime */
+} skyrim_immersive_frame;
+void skyrim_immersive_start(void);
+void skyrim_immersive_stop(void);
+int skyrim_immersive_acquire(skyrim_immersive_frame *out);
+void skyrim_immersive_release(void *state, uint32_t slot);
+#endif
 
 #endif

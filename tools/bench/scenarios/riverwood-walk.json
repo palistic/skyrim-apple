@@ -1,0 +1,17 @@
+{
+  "description": "From the main menu, god mode and coc into Riverwood, stand for 10 s, then run forward for 20 s. Uses the default character, no save. Frame numbers are placeholders until `bench.py calibrate` shows when the main menu is up on this device.",
+  "console_at": 1800,
+  "console": ["tgm", "coc riverwood"],
+  "command_gap": 30,
+  "keys": [
+    {"key": "W", "start": 3600, "frames": 1200}
+  ],
+  "phases": {
+    "menu": [600, 1800],
+    "load": [1900, 3000],
+    "idle": [3000, 3600],
+    "run": [3600, 4800]
+  },
+  "shots": [1700, 2950, 3590, 4790],
+  "exit_frame": 4900
+}

@@ -231,11 +231,35 @@ final class LauncherModel: ObservableObject {
         case .nativeDevice:
             if !runtimeReady { return nativeProblem ?? "Checking Skyrim's files in this app…" }
         }
-        if !input.canLaunch { return input.detail }
+        if !input.canLaunch && !Self.simulatorAutoPlay { return input.detail }
         return nil
     }
 
     var canPlay: Bool { primaryAction == .play && playBlockedReason == nil }
+
+    /// Test hook: `simctl launch … -SkyrimSimulatorAutoPlay YES` presses Play once the files verify,
+    /// without the input gate (the Simulator has no controller and no one to tap). On a Vision Pro,
+    /// `devicectl device process launch … -SkyrimBenchAutoPlay YES` does the same for tools/bench runs;
+    /// only a developer launching the app from a paired Mac can pass it.
+    static var simulatorAutoPlay: Bool {
+        #if targetEnvironment(simulator) && SKYRIM_NATIVE_RUNTIME
+        UserDefaults.standard.bool(forKey: "SkyrimSimulatorAutoPlay")
+        #elseif os(visionOS) && SKYRIM_NATIVE_RUNTIME
+        UserDefaults.standard.bool(forKey: "SkyrimBenchAutoPlay")
+        #else
+        false
+        #endif
+    }
+
+    /// Test hook: with `-SkyrimBenchImmersive YES` as well, autoplay goes through Play Immersive (LibraryView).
+    static var benchImmersive: Bool {
+        #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+        simulatorAutoPlay && UserDefaults.standard.bool(forKey: "SkyrimBenchImmersive")
+        #else
+        false
+        #endif
+    }
+    static var benchImmersiveStarted = false
 
     var runtimeSummary: String {
         switch runtime {
@@ -332,6 +356,7 @@ final class LauncherModel: ObservableObject {
                 self.nativeProblem = problem
                 self.headline = problem == nil ? "Ready to play" : "Game files need attention"
                 self.detail = problem ?? result.detail
+                if Self.simulatorAutoPlay, !Self.benchImmersive, self.canPlay { self.play() }
             }
             return
         }
@@ -401,6 +426,19 @@ final class LauncherModel: ObservableObject {
         session = .launching
         headline = "Starting Skyrim"
         detail = "Starting the native game on this \(LauncherPlatform.name)."
+        #if os(visionOS)
+        Task { [weak self] in
+            await NativeRuntime.shapeWindow(forGame: true)
+            self?.startNative()
+        }
+        #else
+        startNative()
+        #endif
+        #endif
+    }
+
+    #if SKYRIM_NATIVE_RUNTIME
+    private func startNative() {
         NativeRuntime.start(saveRoot: SkyrimSaveLocations.runtimeRoot, started: { [weak self] in
             // A disconnect while launching already paused it; the game then holds its first frame.
             guard let self, case .launching = self.session else { return }
@@ -415,10 +453,15 @@ final class LauncherModel: ObservableObject {
             self.headline = problem == nil ? "Skyrim closed" : "Skyrim stopped"
             self.detail = problem ?? "Your saves are in Saved Games."
             if let problem { self.errorMessage = problem }
-            Task { await self.saves.refresh() }
+            Task {
+                #if os(visionOS)
+                await NativeRuntime.shapeWindow(forGame: false)
+                #endif
+                await self.saves.refresh()
+            }
         })
-        #endif
     }
+    #endif
 
     func pause(reason: String = "Paused") {
         switch session {

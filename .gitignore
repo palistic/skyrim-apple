@@ -75,3 +75,5 @@ __pycache__/
 *.pem
 *.key
 .DS_Store
+# Benchmark runs (tools/bench): logs and screenshots of private game files
+/bench-results/
