@@ -9,6 +9,8 @@
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#include <pthread.h>
+#include <pthread/qos.h>
 /* Apple input policy (input.c, dinput.c) on macOS, iOS, iPadOS and the iPad
  * Simulator: DirectInput keyboard and mouse are tracked from the events pumped
  * here, and controllers attached at launch are XInput pads from the first
@@ -227,8 +229,14 @@ static void head_steer(void) {
         diverging = 0; anchored = 0; atomic_store(&g_head_anchored, 0);
         return;
     }
-    carry_x += err_yaw * kx * gain;
-    carry_y -= err_pitch * ky * gain * ysign;   /* mouse down = look down, unless inverted */
+    /* The gain is per 60 Hz frame: scale by this frame's length so a frame cap (LB_MAX_FPS=30/45) responds as fast. */
+    static double prev_t;
+    double t_now = (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+    float frame_scale = prev_t > 0 ? (float)((t_now - prev_t) * 60.0) : 1.0f;
+    prev_t = t_now;
+    frame_scale = fmaxf(0.5f, fminf(3.0f, frame_scale));
+    carry_x += err_yaw * kx * gain * frame_scale;
+    carry_y -= err_pitch * ky * gain * ysign * frame_scale;   /* mouse down = look down, unless inverted */
     float cap = 40;
     carry_x = fmaxf(-cap, fminf(cap, carry_x));
     carry_y = fmaxf(-cap, fminf(cap, carry_y));
@@ -413,6 +421,13 @@ static void native_hold_frames(void) {
 #endif
 
 void platform_init(void) {
+#if defined(__APPLE__)
+    /* LB_QOS=1: the game's main thread (it also presents) in the user-interactive QoS class; see kernel32.c. */
+    if (getenv("LB_QOS") && *getenv("LB_QOS") == '1') {
+        int r = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        LOG("qos: main thread user-interactive (%d)", r);
+    }
+#endif
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0)
         rt_fatal("SDL_Init: %s", SDL_GetError());
