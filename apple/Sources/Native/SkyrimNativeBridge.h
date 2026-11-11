@@ -18,6 +18,12 @@ void skyrim_native_request_quit(void);
 void skyrim_sdl_set_game_scene(void *window_scene);
 /* 1 while immersive play runs: SDL's game window turns nearly invisible but keeps taking the trackpad. */
 void skyrim_sdl_set_window_ghost(int on);
+/* The game window's SwiftUI pointer surface (LB_GAME_SCENE): hover x from -1 to 1, and leaving it. Main thread. */
+void skyrim_xr_hover(float x);
+void skyrim_xr_hover_left(void);
+/* A pinch or trackpad click seen as a spatial event on the immersive layer: 1 down, 0 up. Ignored when GCMouse
+ * delivered the same press (runtime/platform_sdl.c). */
+void skyrim_spatial_click(int down);
 
 /* ipad/immersive_bridge.mm: the game's frames for the immersive compositor. */
 #include <stdint.h>

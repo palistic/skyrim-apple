@@ -62,6 +62,25 @@ static void capture_mouse(void) {
 #endif
 
 #if defined(LB_IOS_DEVICE) && TARGET_OS_VISION
+/* A spatial click on the immersive layer (an indirect pinch, which is also how a trackpad click can arrive):
+ * a left button, unless GCMouse pressed a button within 0.25 s (the same click arriving both ways). A press that
+ * was skipped skips its release too. Any thread. */
+double skyrim_xr_last_mouse_press(void);
+void dinput_inject_button(int b, int down);
+void skyrim_spatial_click(int down) {
+    static atomic_int pressed;
+    if (down) {
+        if (atomic_load(&pressed)) return;  /* an active pinch reports every update */
+        extern double CACurrentMediaTime(void);
+        if (CACurrentMediaTime() - skyrim_xr_last_mouse_press() < 0.25) return;
+        atomic_store(&pressed, 1);
+        dinput_inject_button(0, 1);
+        LOG("pointer: spatial click");
+    } else if (atomic_exchange(&pressed, 0)) {
+        dinput_inject_button(0, 0);
+    }
+}
+
 /* The SDL overlay's edge turn (ipad/visionos/sdl/SDL_uikit_xros.m): while the pointer is pushed against a side of
  * the window, feed the game the motion it can no longer get. LB_EDGE_TURN is the full rate in mouse counts per
  * second (0 turns it off). Main thread only. */

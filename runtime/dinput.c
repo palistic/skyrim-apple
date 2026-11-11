@@ -181,6 +181,18 @@ void dinput_inject_mouse(int dx, int dy) {
     pthread_mutex_unlock(&g_di_lock);
 }
 
+/* A mouse button from the runtime itself (spatial clicks on visionOS): b 0 = left. Any thread. */
+void dinput_inject_button(int b, int down) {
+    if (b < 0 || b > 7) return;
+    pthread_mutex_lock(&g_di_lock);
+    g_di_fed = 1;
+    uint8_t bit = (uint8_t)(1u << b);
+    if (down) { g_mouse.held |= bit; g_mouse.presses[b]++; }
+    else g_mouse.held &= (uint8_t)~bit;
+    mouse_record(12u + (uint32_t)b, down ? 0x80 : 0);  /* DIMOFS_BUTTONn */
+    pthread_mutex_unlock(&g_di_lock);
+}
+
 /* Called by the platform layer for every SDL event it pumps, on any thread. */
 void dinput_handle_event(const SDL_Event *e) {
     pthread_mutex_lock(&g_di_lock);

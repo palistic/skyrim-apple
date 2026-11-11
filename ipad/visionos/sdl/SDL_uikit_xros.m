@@ -196,9 +196,11 @@ void SDLXR_MouseDelta(void)
 
 /* Clicks and scroll from GCMouse, counted like the deltas (docs/VISIONOS_POINTER_PLAN.md step 1). */
 static _Atomic int xr_clicks_over, xr_clicks_off, xr_scroll_over, xr_scroll_off;
+static _Atomic double xr_press_at;
 void SDLXR_MouseButton(int pressed)
 {
     if (!pressed) return;
+    xr_press_at = CACurrentMediaTime();
     if (xr_over) xr_clicks_over++; else xr_clicks_off++;
 }
 void SDLXR_MouseScroll(void)
@@ -220,10 +222,22 @@ void skyrim_sdl_set_window_ghost(int on)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *w = xr_sdl_window();
-        w.alpha = on ? 0.02 : 1.0;
-        fprintf(stderr, "pointer: game window %s\n", w ? (on ? "ghosted for immersive" : "shown") : "not found");
+        /* In the game's own window (LB_GAME_SCENE) SwiftUI's near-invisible fill is the pointer surface, so SDL's
+         * window hides completely; in the launcher window it stays, nearly invisible, as the surface itself. */
+        const char *scene = getenv("LB_GAME_SCENE");
+        BOOL own = scene && !strcmp(scene, "1");
+        if (own) { w.hidden = on ? YES : NO; w.alpha = 1.0; }
+        else w.alpha = on ? 0.02 : 1.0;
+        fprintf(stderr, "pointer: game window %s\n", w ? (on ? (own ? "hidden for immersive" : "ghosted for immersive") : "shown") : "not found");
     });
 }
+
+/* The SwiftUI pointer surface's hover position (GameSurface.swift), for the edge turn. Main thread. */
+void skyrim_xr_hover(float x) { SDLXR_PointerMoved(x); }
+void skyrim_xr_hover_left(void) { SDLXR_PointerLeft(); }
+
+/* When GCMouse last pressed a button, so a spatial click from the same press isn't counted twice. */
+double skyrim_xr_last_mouse_press(void) { return xr_press_at; }
 
 /* LB_POINTER_LOCK: "1" (default) leaves SDL's request as it is; "key" also makes SDL's window the key window and
  * asks UIKit to re-read the lock preference, in case UIKit asks the key window's root controller and that was

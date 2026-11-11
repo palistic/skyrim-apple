@@ -26,7 +26,7 @@ struct SkyrimLauncherApp: App {
             }
         }
         #else
-        WindowGroup("Skyrim") {
+        WindowGroup("Skyrim", id: LibraryView.windowID) {
             LibraryView(model: model)
                 .environment(\.skyrimGameActive, model.isGameActive)
                 #if os(visionOS)
@@ -49,12 +49,28 @@ struct SkyrimLauncherApp: App {
         .windowStyle(.plain)
         #endif
         #if os(visionOS) && SKYRIM_NATIVE_RUNTIME
+        // LB_GAME_SCENE=1: the game's own window, also the trackpad's pointer surface (GameSurface.swift).
+        WindowGroup("Skyrim", id: GameSurfaceView.windowID) {
+            GameSurfaceView(model: model)
+        }
+        .windowStyle(.plain)
+        .defaultSize(width: 2400, height: 1300)
         ImmersiveSpace(id: ImmersiveScreen.spaceID) {
             CompositorLayer(configuration: ImmersiveScreenConfiguration()) { layer in
                 // Which spatial events (trackpad clicks, pinches) reach the layer: counted for the log
                 // (docs/VISIONOS_POINTER_PLAN.md step 1).
                 layer.onSpatialEvent = { events in
-                    for event in events { SpatialEventLog.note(kind: "\(event.kind)", phase: "\(event.phase)") }
+                    for event in events {
+                        SpatialEventLog.note(kind: "\(event.kind)", phase: "\(event.phase)")
+                        // Clicks with the pointer off every window: an indirect pinch is a left click
+                        // (deduplicated against GCMouse in the runtime).
+                        guard event.kind == .indirectPinch else { continue }
+                        switch event.phase {
+                        case .active: skyrim_spatial_click(1)
+                        case .ended, .cancelled: skyrim_spatial_click(0)
+                        default: break
+                        }
+                    }
                 }
                 ImmersiveCompositor(layer: layer).start()
             }

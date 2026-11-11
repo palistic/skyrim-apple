@@ -1,5 +1,14 @@
 # Plan: trackpad and mouse on Vision Pro
 
+> **Implemented 2026-11-10 (Skyrim - M1 session), not yet run on the headset:** step 1 diagnostics; the `key`
+> lock variant (`LB_POINTER_LOCK=key`); the game in its own window, which is the pointer surface
+> (`LB_GAME_SCENE=1`: `apple/Sources/App/GameSurface.swift`, plain style, 2400x1300, 0.001-opacity fill with a
+> content shape, hover feeding the edge turn, `.pointerStyle(.shape(Circle(), size: 0.01))`; the launcher window
+> closes at Play; SDL's view hides during immersive play); indirect-pinch clicks deduplicated against GCMouse.
+> Without `LB_GAME_SCENE`, the launcher window turns nearly invisible during immersive play instead. Not done:
+> reopen-on-background, the menu-cursor sync (step 8). The performance session's update (Minecraft port's
+> headset results: lock refused, tracking areas useless, the window form that works) is in its worktree copy.
+
 For the "Skyrim - M1" session, 2026-11-10, from the performance session. Planning only; nothing here is built.
 "Verified" means read in the XROS27.2 SDK on this Mac, in this repo's code, or in a headset log. Everything else
 is marked as a guess. Nothing in this plan has run on the headset.
