@@ -1,0 +1,35 @@
+{
+  "description": "Settings sweep: whiterun-market-avp at the low preset at 1280x720 (LB_PRESET picks the install's preset INI each launch). Route and frames as whiterun-market-avp.",
+  "console_at": 1800,
+  "console": [
+    "coc whiterunorigin"
+  ],
+  "console_close": false,
+  "keys": [
+    {
+      "key": "W",
+      "start": 7200,
+      "frames": 1100
+    }
+  ],
+  "phases": {
+    "idle": [
+      6000,
+      7200
+    ],
+    "run": [
+      7200,
+      8300
+    ]
+  },
+  "shots": [
+    1790,
+    5990,
+    7190,
+    8290
+  ],
+  "exit_frame": 8400,
+  "env": {
+    "LB_PRESET": "low"
+  }
+}

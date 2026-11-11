@@ -434,11 +434,18 @@ static void ini_set(IniFile *f, const char *sec, const char *key, const char *va
 void skyrim_seed_prefs(int w, int h) {
     const char *prefs = "C:\\Users\\Player\\Documents\\My Games\\Skyrim\\SkyrimPrefs.ini";
     char host[1024];
-    if (rt_host_path(prefs, host, sizeof host)) return;
+    /* An existing file is kept (the player's settings), unless LB_PRESET asks for a preset. */
+    if (rt_host_path(prefs, host, sizeof host) && !(getenv("LB_PRESET") && *getenv("LB_PRESET"))) return;
     pthread_mutex_lock(&g_ini_lock);
     IniFile *f = ini_get(prefs);
     char low[1024];
-    snprintf(low, sizeof low, "%s/low.ini", g_game_dir);
+    /* LB_PRESET=low|medium|high|veryhigh picks the install's preset file (benchmark settings sweeps). */
+    const char *preset = getenv("LB_PRESET");
+    const char *file = !preset || !*preset ? "low.ini" : !strcasecmp(preset, "medium") ? "medium.ini"
+                     : !strcasecmp(preset, "high") ? "high.ini" : !strcasecmp(preset, "veryhigh") || !strcasecmp(preset, "ultra")
+                     ? "VeryHigh.ini" : "low.ini";
+    snprintf(low, sizeof low, "%s/%s", g_game_dir, file);
+    if (preset && *preset) fprintf(stderr, "prefs: preset %s from %s\n", preset, file);
     IniFile src = {0};
     snprintf(src.path, sizeof src.path, "%s", low);
     ini_parse(&src);
