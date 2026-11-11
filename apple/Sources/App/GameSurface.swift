@@ -5,8 +5,9 @@ import SwiftUI
 /// scene. The window is also the trackpad's pointer surface: visionOS only delivers trackpad motion while the
 /// pointer is over one of the app's windows, and on the headset (Minecraft port) the surface that worked was a
 /// plain window about 2400x1300 filled with near-invisible black and a content shape. Fully clear windows,
-/// hidden window controls and much larger windows got no input at all. During immersive play SDL's own view is
-/// hidden, and this view's hover position feeds the edge turn.
+/// hidden window controls and much larger windows got no input at all. During immersive play SDL's own window
+/// turns nearly invisible (not hidden, so it keeps keyboard focus and relative mode); this view's hover feeds the
+/// edge turn wherever SDL's window doesn't cover it.
 struct GameSurfaceView: View {
     static let windowID = "game"
     @ObservedObject var model: LauncherModel

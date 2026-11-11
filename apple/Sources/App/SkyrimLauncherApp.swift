@@ -76,6 +76,8 @@ struct SkyrimLauncherApp: App {
             }
         }
         .immersionStyle(selection: .constant(.full), in: .full)
+        // No Home indicator to catch the pointer or the eyes when looking up mid-game (Minecraft port, observed).
+        .persistentSystemOverlays(.hidden)
         #endif
         #endif
     }

@@ -222,13 +222,11 @@ void skyrim_sdl_set_window_ghost(int on)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *w = xr_sdl_window();
-        /* In the game's own window (LB_GAME_SCENE) SwiftUI's near-invisible fill is the pointer surface, so SDL's
-         * window hides completely; in the launcher window it stays, nearly invisible, as the surface itself. */
-        const char *scene = getenv("LB_GAME_SCENE");
-        BOOL own = scene && !strcmp(scene, "1");
-        if (own) { w.hidden = on ? YES : NO; w.alpha = 1.0; }
-        else w.alpha = on ? 0.02 : 1.0;
-        fprintf(stderr, "pointer: game window %s\n", w ? (on ? (own ? "hidden for immersive" : "ghosted for immersive") : "shown") : "not found");
+        /* Nearly invisible rather than hidden: a hidden UIWindow could cost SDL its keyboard focus and with it
+         * relative mode, which GCMouse motion needs. At 0.02 UIKit still hit-tests it (below 0.01 it stops), so
+         * it stays the pointer surface over the window's near-invisible fill. */
+        w.alpha = on ? 0.02 : 1.0;
+        fprintf(stderr, "pointer: game window %s\n", w ? (on ? "ghosted for immersive" : "shown") : "not found");
     });
 }
 
