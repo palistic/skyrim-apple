@@ -325,6 +325,10 @@ namespace dxvk {
     // advertises it. No unsupported features are claimed or emulated here.
     if (m_deviceExtensions.supports("VK_KHR_portability_subset"))
       extensionsEnabled.add("VK_KHR_portability_subset");
+    // Skyrim Apple port: lets the visionOS compositor read DXVK images as MTLTextures
+    // (vkExportMetalObjectsEXT; see include/native/skyrim_present_tap.h). Export only, no behaviour change.
+    if (m_deviceExtensions.supports("VK_EXT_metal_objects"))
+      extensionsEnabled.add("VK_EXT_metal_objects");
 #endif
     DxvkNameList extensionNameList = extensionsEnabled.toNameList();
 

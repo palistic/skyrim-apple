@@ -15,6 +15,9 @@ From the checkout root:
   python3 ipad/build.py export             a link-free copy of your verified game files
                                            (ipad/build/Skyrim) for the app's Documents/Skyrim
 
+engine and app take --platform visionos for Apple Vision Pro (xros arm64, SkyrimVision): outputs go
+to ipad/build/visionos/ instead. Vision Pro support is in development and not a device result yet.
+
 check, engine and export read --gen-dir (SKYRIM_GEN_DIR; default gen/) and accept it only if
 macos/inputs.py verify-generated binds it to exact original inputs that are still present: the
 folder its manifest records, or --game-dir (SKYRIM_GAME_DIR). They never regenerate it. At most
@@ -37,6 +40,34 @@ ROOT = Path(__file__).resolve().parents[1]
 IPAD = ROOT / "ipad"
 BUILD = IPAD / "build/engine"
 OUT = IPAD / "build/out"
+# Per device platform: SDK, Mach-O LC_BUILD_VERSION platform, build and output folders, toolchain,
+# dependency prefixes and the launcher scheme. iOS keeps the original paths.
+PLATFORMS = {
+    "ios": {"sdk": "iphoneos", "macho": "2", "vtool": "platform IOS", "label": "physical iPad", "build": BUILD,
+            "out": OUT, "toolchain": IPAD / "toolchain.cmake", "moltenvk": IPAD / "deps/MoltenVK-ios-v1.4.2",
+            "ffmpeg": IPAD / "deps/ffmpeg-iphoneos", "scheme": "SkyrimIOS", "destination": "generic/platform=iOS",
+            "entitlements": "Native-iOS-{variant}.entitlements", "log_prefix": ""},
+    "visionos": {"sdk": "xros", "macho": "11", "vtool": "platform VISIONOS", "label": "Apple Vision Pro",
+                 "build": IPAD / "build/visionos/engine", "out": IPAD / "build/visionos/out",
+                 "toolchain": IPAD / "visionos/toolchain.cmake", "moltenvk": IPAD / "deps/MoltenVK-xros-v1.4.2",
+                 "ffmpeg": IPAD / "deps/ffmpeg-xros", "scheme": "SkyrimVision",
+                 "destination": "generic/platform=visionOS", "entitlements": "Native-visionOS-{variant}.entitlements",
+                 "log_prefix": "visionos-",
+                 # MoltenVK v1.4.2's xros slice is built for visionOS 26.5, so the native app needs it too.
+                 "app_settings": ["XROS_DEPLOYMENT_TARGET=26.5"]},
+    # Pre-headset checks only (window, SDL scene, MoltenVK surface); the Simulator runs on the Mac.
+    "visionos-simulator": {"sdk": "xrsimulator", "macho": "12", "vtool": "platform VISIONOSSIMULATOR",
+                           "simulator": True, "label": "visionOS Simulator",
+                           "build": IPAD / "build/visionos-simulator/engine",
+                           "out": IPAD / "build/visionos-simulator/out",
+                           "toolchain": IPAD / "visionos/toolchain-simulator.cmake",
+                           "moltenvk": IPAD / "deps/MoltenVK-xrsimulator-v1.4.2", "ffmpeg": IPAD / "deps/ffmpeg-xrsimulator",
+                           "scheme": "SkyrimVision", "destination": "generic/platform=visionOS Simulator",
+                           "entitlements": "Native-visionOS-{variant}.entitlements",
+                           "log_prefix": "visionos-simulator-",
+                           # The engine is arm64 only, as is every Apple silicon Mac that runs the Simulator.
+                           "app_settings": ["XROS_DEPLOYMENT_TARGET=26.5", "ARCHS=arm64"]},
+}
 DEPOT_VIEW = ROOT / "macos/build/steam-72850-view"
 VENV_PYTHON = ROOT / "macos/.venv/bin/python"
 sys.path.insert(0, str(ROOT / "macos"))
@@ -104,6 +135,7 @@ def git(*arguments):
 
 
 def run(command, name, cwd=ROOT):
+    name = LOG_PREFIX + name
     log = IPAD / "build/logs" / f"{name}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
@@ -115,15 +147,18 @@ def run(command, name, cwd=ROOT):
     print(f"{name} passed in {time.monotonic() - start:.0f} s; log: {log}", flush=True)
 
 
-def require_host(*tools):
+LOG_PREFIX = ""
+
+
+def require_host(*tools, sdk="iphoneos"):
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         fail("An Apple Silicon Mac (macOS on arm64) is required.")
     missing = [f"  {tool}: {TOOLS[tool]}" for tool in tools if not shutil.which(tool)]
     if missing:
         fail("Missing build tools:\n" + "\n".join(missing))
-    if "xcrun" in tools and subprocess.run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"],
+    if "xcrun" in tools and subprocess.run(["xcrun", "--sdk", sdk, "--show-sdk-path"],
                                            capture_output=True).returncode:
-        fail(f"Xcode's iOS SDK was not found. Install {TOOLS['xcrun']}.")
+        fail(f"Xcode's {sdk} SDK was not found. Install {TOOLS['xcrun']}.")
 
 
 def verified_generation(gen, game=None):
@@ -152,7 +187,7 @@ def verified_generation(gen, game=None):
 
 
 def platforms(archive):
-    """LC_BUILD_VERSION platforms of every member (2 = iphoneos, 7 = iOS Simulator)."""
+    """LC_BUILD_VERSION platforms of every member (2 = iphoneos, 7 = iOS Simulator, 11 = xros)."""
     text = subprocess.run(["otool", "-l", str(archive)], capture_output=True, text=True).stdout
     return sorted({line.split()[1] for line in text.splitlines() if line.strip().startswith("platform ")})
 
@@ -241,16 +276,18 @@ def export(args):
 
 
 def engine(args):
+    target = PLATFORMS[args.platform]
+    BUILD, OUT, sdk = target["build"], target["out"], target["sdk"]
     gen = args.gen_dir.resolve()
     manifest_sha, receipt = verified_generation(gen, args.game_dir)
     game = Path(args.game_dir or receipt["game_directory"]).resolve()
-    require_host("xcrun", "cmake", "ninja")
+    require_host("xcrun", "cmake", "ninja", sdk=sdk)
     jobs = str(args.jobs)
-    run([sys.executable, IPAD / "build_ffmpeg.py", "--jobs", jobs,
-         *(["--source-archive", args.ffmpeg_archive] if args.ffmpeg_archive else [])], "ffmpeg-iphoneos")
-    run([sys.executable, IPAD / "prepare_moltenvk.py",
-         *(["--archive", args.moltenvk_archive] if args.moltenvk_archive else [])], "moltenvk-iphoneos")
-    run(["cmake", "-S", IPAD, "-B", BUILD, "-G", "Ninja", f"-DCMAKE_TOOLCHAIN_FILE={IPAD / 'toolchain.cmake'}",
+    run([sys.executable, IPAD / "build_ffmpeg.py", "--jobs", jobs, *(["--sdk", sdk] if sdk != "iphoneos" else []),
+         *(["--source-archive", args.ffmpeg_archive] if args.ffmpeg_archive else [])], f"ffmpeg-{sdk}")
+    run([sys.executable, IPAD / "prepare_moltenvk.py", *(["--sdk", sdk] if sdk != "iphoneos" else []),
+         *(["--archive", args.moltenvk_archive] if args.moltenvk_archive else [])], f"moltenvk-{sdk}")
+    run(["cmake", "-S", IPAD, "-B", BUILD, "-G", "Ninja", f"-DCMAKE_TOOLCHAIN_FILE={target['toolchain']}",
          "-DCMAKE_BUILD_TYPE=Release", f"-DSKYRIM_PYTHON={sys.executable}", f"-DSKYRIM_GEN_DIR={gen}",
          f"-DSKYRIM_GAME_DIR={game}"], "engine-configure")
     commands = json.loads((BUILD / "compile_commands.json").read_text())
@@ -265,19 +302,19 @@ def engine(args):
         fail("The generated code changed during the build; rebuild before using the engine")
     parts = {"engine": BUILD / "libSkyrimNativeEngine.a", "sdl2": BUILD / "sdl2/libSDL2.a",
              "dxvk_d3d9": BUILD / "dxvk/libdxvk_d3d9.a",
-             "moltenvk": IPAD / "deps/MoltenVK-ios-v1.4.2/lib/libMoltenVK.a",
-             "avcodec": IPAD / "deps/ffmpeg-iphoneos/lib/libavcodec.a",
-             "avutil": IPAD / "deps/ffmpeg-iphoneos/lib/libavutil.a"}
+             "moltenvk": target["moltenvk"] / "lib/libMoltenVK.a",
+             "avcodec": target["ffmpeg"] / "lib/libavcodec.a",
+             "avutil": target["ffmpeg"] / "lib/libavutil.a"}
     for name, path in parts.items():
         found = platforms(path)
-        if found != ["2"]:
-            fail(f"{name} ({path}) is not purely an iphoneos archive: platforms {found}")
+        if found != [target["macho"]]:
+            fail(f"{name} ({path}) is not purely an {sdk} archive: platforms {found}")
     OUT.mkdir(parents=True, exist_ok=True)
     merged = OUT / "libSkyrimNative.a"
     merged.unlink(missing_ok=True)
     run(["libtool", "-static", "-no_warning_for_no_symbols", "-o", merged, *parts.values()], "engine-merge")
     status = git("status", "--short")
-    receipt = {"schema": 1, "scope": "physical iPad native Skyrim engine (iphoneos arm64); not a device result",
+    receipt = {"schema": 1, "scope": f"{target['label']} native Skyrim engine ({sdk} arm64); not a device result",
                "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                "generated_manifest_sha256": manifest_sha, "game_directory": str(game),
                "source_commit": (git("rev-parse", "HEAD") or "unknown (not a git checkout)").strip(),
@@ -316,13 +353,17 @@ def signing_settings(args):
 
 
 def app(args):
+    target = PLATFORMS[args.platform]
+    OUT, sdk = target["out"], target["sdk"]
     settings, container = signing_settings(args)
-    require_host("xcrun", "xcodegen")
+    require_host("xcrun", "xcodegen", sdk=sdk)
     try:
         receipt = json.loads((OUT / "engine-receipt.json").read_text())
     except (OSError, ValueError):
         fail("No engine receipt; run python3 ipad/build.py engine first.")
     library = Path(receipt["library"]["path"])
+    if not library.is_file():
+        library = OUT / library.name  # an engine built on another Mac and copied into OUT with its receipt
     if not library.is_file() or sha256(library) != receipt["library"]["sha256"]:
         fail("libSkyrimNative.a changed since its receipt; rebuild the engine")
     apple = ROOT / "apple"
@@ -332,19 +373,22 @@ def app(args):
     # Local is the default: no iCloud entitlement at all. Cloud is optional and needs your own container.
     configuration, variant = ("Cloud", "Cloud") if args.cloud else ("Release", "Local")
     flags = ["-ObjC", str(library), "-lc++", "-liconv", "-lz"] + [f for name in FRAMEWORKS for f in ("-framework", name)]
-    derived = IPAD / "build/DerivedData"
-    command = ["xcodebuild", "-project", apple / "SkyrimApple.xcodeproj", "-scheme", "SkyrimIOS",
-               "-configuration", configuration, "-sdk", "iphoneos", "-destination", "generic/platform=iOS",
+    derived = IPAD / "build/DerivedData" if args.platform == "ios" else OUT.parent / "DerivedData"
+    command = ["xcodebuild", "-project", apple / "SkyrimApple.xcodeproj", "-scheme", target["scheme"],
+               "-configuration", configuration, "-sdk", sdk, "-destination", target["destination"],
                "-derivedDataPath", derived, "-jobs", str(args.jobs), "COMPILER_INDEX_STORE_ENABLE=NO",
                f"SKYRIM_NATIVE_LDFLAGS={' '.join(flags)}", "SKYRIM_NATIVE_SWIFT_CONDITIONS=SKYRIM_NATIVE_RUNTIME",
-               f"CODE_SIGN_ENTITLEMENTS={apple / f'Native-iOS-{variant}.entitlements'}", *settings]
+               f"CODE_SIGN_ENTITLEMENTS={apple / target['entitlements'].format(variant=variant)}",
+               *target.get("app_settings", []), *settings]
+    if args.skip_metal:  # no Metal Toolchain on this Mac: the launcher's smoke background is left out
+        command.append("EXCLUDED_SOURCE_FILE_NAMES=SmokeBackground.metal")
     command += ["-allowProvisioningUpdates"] if args.signed else ["CODE_SIGNING_ALLOWED=NO"]
     run(command + ["build"], "app-build-signed" if args.signed else "app-build-unsigned")
-    product = derived / f"Build/Products/{configuration}-iphoneos/Skyrim.app"
+    product = derived / f"Build/Products/{configuration}-{sdk}/Skyrim.app"
     binary = product / "Skyrim"
     build = subprocess.check_output(["xcrun", "vtool", "-show-build", str(binary)], text=True)
-    if "platform IOS" not in build or "IOSSIMULATOR" in build:
-        fail("The app binary is not an iphoneos binary:\n" + build)
+    if target["vtool"] not in build or ("SIMULATOR" in build) != target.get("simulator", False):
+        fail(f"The app binary is not an {sdk} binary:\n" + build)
     exports = subprocess.run(["nm", "-gU", str(binary)], capture_output=True, text=True).stdout
     info = json.loads(subprocess.check_output(["plutil", "-convert", "json", "-o", "-", str(product / "Info.plist")]))
     result = {"schema": 1, "scope": "native-enabled launcher candidate; not a device result",
@@ -427,10 +471,16 @@ def main(argv=None):
     step.add_argument("--output", type=Path, default=IPAD / "build/Skyrim", help="a new folder (default: ipad/build/Skyrim)")
     step = steps.add_parser("engine", help="device dependencies, then ipad/build/out/libSkyrimNative.a")
     generated_options(step)
+    step.add_argument("--platform", choices=sorted(PLATFORMS), default="ios",
+                      help="ios (default), visionos or visionos-simulator (outputs in ipad/build/<platform>/)")
     step.add_argument("--jobs", type=int, choices=(1, 2), default=2)
     step.add_argument("--ffmpeg-archive", type=Path, help="local ffmpeg-7.1.2.tar.xz instead of downloading it")
     step.add_argument("--moltenvk-archive", type=Path, help="local MoltenVK-ios.tar (v1.4.2) instead of downloading it")
     step = steps.add_parser("app", help="the launcher app linked with the engine")
+    step.add_argument("--platform", choices=sorted(PLATFORMS), default="ios",
+                      help="ios (SkyrimIOS, default), visionos or visionos-simulator (SkyrimVision)")
+    step.add_argument("--skip-metal", action="store_true",
+                      help="leave out the launcher's Metal shader, for a Mac without Xcode's Metal Toolchain")
     step.add_argument("--signed", action="store_true", help="sign with your team's development identity")
     step.add_argument("--team", default=environ("SKYRIM_DEVELOPMENT_TEAM"), help="your Apple Team ID")
     step.add_argument("--bundle-id", default=environ("SKYRIM_BUNDLE_ID"), help="an App ID you own")
@@ -439,6 +489,8 @@ def main(argv=None):
                       help="your iCloud container with --cloud (default: iCloud.BUNDLE_ID)")
     step.add_argument("--jobs", type=int, choices=(1, 2), default=2)
     args = parser.parse_args(argv)
+    global LOG_PREFIX
+    LOG_PREFIX = PLATFORMS[getattr(args, "platform", "ios")]["log_prefix"]
     if sys.version_info < (3, 12):
         fail("Python 3.12 or newer is required (for example Homebrew's python3); macOS's /usr/bin/python3 is too old.")
     {"prepare": prepare, "check": check, "export": export, "engine": engine, "app": app}[args.step](args)

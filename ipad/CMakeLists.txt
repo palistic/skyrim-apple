@@ -2,9 +2,20 @@ cmake_minimum_required(VERSION 3.24)
 project(SkyrimIPadNative LANGUAGES C CXX OBJC OBJCXX)
 # The native Skyrim engine for the physical iPad, linked into the launcher app (apple/).
 # Same pinned sources as the Mac and iPad Simulator builds; device (iphoneos arm64) slices only.
+# ipad/visionos/toolchain.cmake builds the same engine for Apple Vision Pro (xros arm64), and
+# ipad/visionos/toolchain-simulator.cmake for the visionOS Simulator (xrsimulator arm64).
 string(TOLOWER "${CMAKE_OSX_SYSROOT}" _sdk)
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" OR NOT _sdk MATCHES "iphoneos")
-  message(FATAL_ERROR "Use ipad/toolchain.cmake; the physical iphoneos SDK is required.")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND _sdk MATCHES "iphoneos")
+  set(SKYRIM_DEVICE_SDK iphoneos)
+  set(SKYRIM_SDL_PLATFORM ios)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS" AND _sdk MATCHES "xrsimulator")
+  set(SKYRIM_DEVICE_SDK xrsimulator)  # pre-headset checks of the window and surface path only
+  set(SKYRIM_SDL_PLATFORM visionos)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS" AND _sdk MATCHES "xros")
+  set(SKYRIM_DEVICE_SDK xros)
+  set(SKYRIM_SDL_PLATFORM visionos)
+else()
+  message(FATAL_ERROR "Use ipad/toolchain.cmake (iphoneos), ipad/visionos/toolchain.cmake (xros) or ipad/visionos/toolchain-simulator.cmake (xrsimulator).")
 endif()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -14,9 +25,14 @@ get_filename_component(SKYRIM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(SKYRIM_PYTHON "" CACHE FILEPATH "Python 3.10+; ipad/build.py passes its own interpreter")
 set(SKYRIM_GEN_DIR "" CACHE PATH "Verified private generated Windows source (read only)")
 set(SKYRIM_GAME_DIR "" CACHE PATH "Game folder gen/ is bound to; empty uses the one its manifest records")
-set(SKYRIM_MOLTENVK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/MoltenVK-ios-v1.4.2" CACHE PATH "MoltenVK v1.4.2 iphoneos slice")
+if(SKYRIM_DEVICE_SDK STREQUAL "iphoneos")
+  set(_moltenvk_dir MoltenVK-ios-v1.4.2)
+else()
+  set(_moltenvk_dir MoltenVK-${SKYRIM_DEVICE_SDK}-v1.4.2)
+endif()
+set(SKYRIM_MOLTENVK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/${_moltenvk_dir}" CACHE PATH "MoltenVK v1.4.2 device slice")
 set(SKYRIM_MOLTENVK_LIBRARY "${SKYRIM_MOLTENVK_ROOT}/lib/libMoltenVK.a")
-set(SKYRIM_FFMPEG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/ffmpeg-iphoneos" CACHE PATH "FFmpeg 7.1.2 WMA decoders, iphoneos")
+set(SKYRIM_FFMPEG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/ffmpeg-${SKYRIM_DEVICE_SDK}" CACHE PATH "FFmpeg 7.1.2 WMA decoders, device SDK")
 if(NOT SKYRIM_PYTHON)
   message(FATAL_ERROR "Configure through ipad/build.py engine, which sets SKYRIM_PYTHON and SKYRIM_GEN_DIR.")
 endif()
@@ -40,7 +56,7 @@ set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
 set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
 set(SDL2_DISABLE_SDL2MAIN ON CACHE BOOL "" FORCE)
 execute_process(COMMAND "${SKYRIM_PYTHON}" "${SKYRIM_ROOT}/simulator/prepare_sdl.py"
-  "${CMAKE_CURRENT_BINARY_DIR}/sdl2-source" RESULT_VARIABLE _sdl_scene_status)
+  --platform ${SKYRIM_SDL_PLATFORM} "${CMAKE_CURRENT_BINARY_DIR}/sdl2-source" RESULT_VARIABLE _sdl_scene_status)
 if(NOT _sdl_scene_status EQUAL 0)
   message(FATAL_ERROR "Unable to prepare the native UIKit SDL scene adaptation.")
 endif()
@@ -86,11 +102,18 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SKYRIM_GEN_DIR}/input-manifest.json")
 execute_process(COMMAND "${SKYRIM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/generate_identity.py"
   "${SKYRIM_GEN_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated/skyrim_native_identity.h" ${_game_dir_args}
+  --sdk ${SKYRIM_DEVICE_SDK}
   RESULT_VARIABLE _identity_status)
 if(NOT _identity_status EQUAL 0)
   message(FATAL_ERROR "Unable to write the native runtime identity.")
 endif()
 add_library(skyrim_ipad_bridge OBJECT native_bridge.mm)
+if(SKYRIM_SDL_PLATFORM STREQUAL "visionos")
+  # The immersive compositor's frame handoff needs DXVK's tap header and MoltenVK's Vulkan headers.
+  target_sources(skyrim_ipad_bridge PRIVATE immersive_bridge.mm)
+  target_include_directories(skyrim_ipad_bridge PRIVATE "${SKYRIM_ROOT}/android/app/jni/dxvk/include/native"
+    "${SKYRIM_MOLTENVK_ROOT}/include")
+endif()
 target_include_directories(skyrim_ipad_bridge PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_options(skyrim_ipad_bridge PRIVATE -fobjc-arc)
 target_link_libraries(skyrim_ipad_bridge PRIVATE SDL2)
@@ -99,8 +122,8 @@ file(GLOB GAME_C CONFIGURE_DEPENDS "${SKYRIM_GEN_DIR}/*.c")
 add_library(skyrim_ipad_generated OBJECT ${GAME_C})
 target_include_directories(skyrim_ipad_generated PRIVATE "${SKYRIM_ROOT}/runtime" "${SKYRIM_GEN_DIR}")
 target_compile_definitions(skyrim_ipad_generated PRIVATE GAME_SKYRIM LB_STRICT_ORDER)
-# The guest base pointer never changes after startup; telling the generated code so removes its reloads.
-# -DLB_CONST_MEM=OFF builds the old way for an A/B.
+# The guest base pointer never changes after startup; telling the generated code so removes its reloads
+# (docs/perf/LOG.md). -DLB_CONST_MEM=OFF builds the old way for an A/B.
 option(LB_CONST_MEM "Generated code treats the guest base pointer as a constant" ON)
 if(LB_CONST_MEM)
   target_compile_definitions(skyrim_ipad_generated PRIVATE LB_CONST_MEM)

@@ -29,18 +29,24 @@
 	</array>
 	<key>GCSupportsControllerUserInteraction</key>
 	<true/>
+	<key>GCSupportsGameMode</key>
+	<true/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.games</string>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSWorldSensingUsageDescription</key>
+	<string>Tracks your head so the immersive screen stays in place around you.</string>
 	<key>SkyrimCloudSyncConfigured</key>
 	<string>$(SKYRIM_CLOUD_SYNC_CONFIGURED)</string>
 	<key>SkyrimICloudContainerIdentifier</key>
 	<string>$(SKYRIM_ICLOUD_CONTAINER)</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
+		<key>UIApplicationPreferredDefaultSceneSessionRole</key>
+		<string>UIWindowSceneSessionRoleApplication</string>
 		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
+		<true/>
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>

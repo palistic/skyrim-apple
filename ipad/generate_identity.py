@@ -35,12 +35,14 @@ def main():
     parser.add_argument("generated", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--game-dir", type=Path, help="game folder gen/ is bound to (default: the one its manifest records)")
+    parser.add_argument("--sdk", choices=("iphoneos", "xros", "xrsimulator"), default="iphoneos", help="device SDK (default: iphoneos)")
     args = parser.parse_args()
     receipt = verify_generated(args.generated, args.game_dir)
     modules = {name: value["sha256"] for name, value in receipt["modules"].items()}
     essential = {name: value["sha256"] for name, value in receipt["essential_data"].items()}
-    moltenvk = json.loads((ROOT / "ipad/deps/MoltenVK-ios-v1.4.2/receipt.json").read_text())
-    ffmpeg = json.loads((ROOT / "ipad/deps/ffmpeg-iphoneos/build-manifest.json").read_text())
+    moltenvk_dir = "MoltenVK-ios-v1.4.2" if args.sdk == "iphoneos" else f"MoltenVK-{args.sdk}-v1.4.2"
+    moltenvk = json.loads((ROOT / "ipad/deps" / moltenvk_dir / "receipt.json").read_text())
+    ffmpeg = json.loads((ROOT / f"ipad/deps/ffmpeg-{args.sdk}/build-manifest.json").read_text())
     try:
         commit = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
                                          text=True, stderr=subprocess.DEVNULL).strip()
@@ -48,7 +50,7 @@ def main():
         commit = "unknown (not a git checkout)"
     identity = {
         "schema": 1,
-        "platform": "iphoneos arm64",
+        "platform": f"{args.sdk} arm64",
         "generated_manifest_sha256": sha256(args.generated / "input-manifest.json"),
         "source_commit": commit,
         "moltenvk": {"release": "v1.4.2", "library_sha256": moltenvk["library_sha256"]},

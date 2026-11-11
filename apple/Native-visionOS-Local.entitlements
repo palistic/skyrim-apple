@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Native Vision Pro build: Local.entitlements (no iCloud) plus the memory capabilities the native runtime
+     may need: it reserves 4 GiB of guest address space (read/write, never executable).
+     No JIT entitlement. Both capabilities need a paid Apple Developer Program team. -->
+<plist version="1.0"><dict>
+  <key>com.apple.developer.kernel.extended-virtual-addressing</key>
+  <true/>
+  <key>com.apple.developer.kernel.increased-memory-limit</key>
+  <true/>
+</dict></plist>
