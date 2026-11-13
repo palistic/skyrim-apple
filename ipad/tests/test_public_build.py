@@ -321,7 +321,10 @@ class MoltenVK(Temporary):
     def test_non_device_slice_is_not_published(self):
         archive = self.fake_release()
         out = self.tmp / "deps/MoltenVK-ios-v1.4.2"
-        with patch.object(moltenvk, "ARCHIVE_SHA256", pinned.sha256(archive)):
+        # The fake archive is not a Mach-O library. Supply the platform metadata directly so
+        # this logic test remains runnable on Linux, where Apple's otool utility is unavailable.
+        with patch.object(moltenvk, "ARCHIVE_SHA256", pinned.sha256(archive)), \
+                patch.object(moltenvk, "build_lines", return_value=["platform 7", "minos 17.0", "sdk 18.5"]):
             with self.assertRaisesRegex(ValueError, "not purely an iphoneos"):
                 moltenvk.prepare(archive, out)
         self.assertEqual(list(out.parent.iterdir()), [])
